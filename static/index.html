@@ -38,7 +38,21 @@
   <div class="container overflow-hidden">
     <div class="mb-2 mt-4">
       <div id="infrasound-time-serie" class="container"></div>
+
+      <form>
+        <div class="mb-3">
+          <label id="timeSeriesRangeIndicator" for="timeSeriesRange" class="form-label">Dargestellte Zeitspanne</label>
+          <input type="range" class="form-range" min="250" max="15000" step="50" id="timeSeriesRange">
+        </div>
+      </form>
+
       <div id="infrasound-spectrum" class="container"></div>
+      <form>
+        <div class="mb-3">
+          <label id="SpectrumRangeIndicator" for="spectrumRange" class="form-label">Spektrum Analyse Dauer</label>
+          <input type="range" class="form-range" min="5" max="12" step="1" id="spectrumRange">
+        </div>
+      </form>
     </div>
   </div>
 </body </html>
