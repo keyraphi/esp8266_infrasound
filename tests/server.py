@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from multiprocessing import Process, Manager
 import json
 from flask import Flask, request, send_from_directory
 
@@ -15,23 +16,32 @@ app = Flask(
 )
 
 
-def tone(samples, frequency):
-    amplitude = 5
+
+def get_measurement(time, frequency, amplitude=5, noise_sigma=1):
     twoPiF = 2 * np.pi * frequency
-    buffer = amplitude * np.sin(twoPiF * samples)
-    buffer += np.random.normal(0, 10, len(samples))
-    return buffer
+    preassure = amplitude * np.sin(twoPiF * time)
+    preassure += np.random.randn() * noise_sigma
+    return preassure
+
 
 @app.route("/")
 def index_handler():
     return send_from_directory(static_directory, "index.html")
 
+
 @app.route("/measurements", methods=["GET"])
 def handle_measurement_request():
-    now = int(time.time() * 1000)
-    times = np.array([now + 20 * i for i in range(10)])
+    start_with_idx = int(request.args.get("start_with_idx"))
+    max_length = int(request.args.get("max_length"))
+    response_data = sensor_data[start_with_idx:]
+    response_data = response_data[-max_length:]
+    print("DEBUG: len(response_data)", len(response_data))
+    next_start_idx = start_with_idx + len(response_data)
+    times = [d[0] for d in response_data]
+    preassure = [d[1] for d in response_data]
+    print("next_start_idx", next_start_idx)
     response = json.dumps(
-        {"ms": times.tolist(), "preassure": tone(times / 1000, 0.8).tolist()}
+        {"next_start_idx": next_start_idx, "ms": times, "preassure": preassure}
     )
     return response
 
@@ -53,17 +63,28 @@ def handle_downloads_request():
 @app.route("/set_wifi", methods=["POST"])
 def handle_wifi_form():
     # Access form data using request.form dictionary
-    print(request.form)
     ssid = request.form.get("ssid")
     password = request.form.get("password")
     print("SSID:", ssid, "password", password)
-    # TODO fix this!
+    return ("", 204)
 
-    # Process the extracted data (SSID and password) here
-    # ... your logic to handle SSID and password ...
+sensor_data = None
 
-    return f"I received ssid={ssid} and password={password}"
+def pollSensor(shared_list):
+    while True:
+        t = time.time()
+        v = get_measurement(t, 0.5)  # This is the frequency
+        shared_list.append((t, v))
+        time.sleep(0.02)
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8000)
+    with Manager() as manager:
+        sensor_data = manager.list()
+        sensor_reader = Process(
+            target=pollSensor, name="SensorReadingProcess", args=(sensor_data,)
+        )
+        sensor_reader.start()
+        print("Running server")
+        app.run(debug=True, port=8000)
+        sensor_reader.join()

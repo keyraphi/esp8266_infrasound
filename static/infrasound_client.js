@@ -37,33 +37,50 @@ var chartTimeSeries = new Highcharts.Chart({
 
 var chartSpectrum = new Highcharts.Chart({
   chart: {
-    type: "area",
     renderTo: "infrasound-spectrum",
     animation: false
   },
   title: { text: "Spektrum" },
   series: [{
     showInLegend: false,
-    data: []
-  }],
+    data: [],
+    type: "line",
+  },
+  {
+    showInLegend: false,
+    data: [],
+    type: "column",
+  },
+  ],
   plotOptions: {
     line: {
       dataLabels: { enabled: false },
+      lineWidth: 5,
+    },
+    column: {
+      pointPadding: 0,
+      borderWidth: 0,
+      groupPadding: 0,
+      shadow: false
     },
     series: {
       color: '#059e8a',
     },
   },
-  xAxis: { type: 'linear', title: { text: "Frequenz [Hz]" } },
+  xAxis: {
+    title: { text: "Frequenz [Hz]" },
+    type: 'linear'
+  },
   yAxis: {
-    title: { text: "Amplitude [Pa]" }
+    title: { text: "Amplitude [Pa]" },
   },
   credits: { enabled: false }
 });
 
 
-var movingSequence = [];
-var movingChartData = [];
+
+var measurement_buffer = [];
+var times_buffer = [];
 var pffft_runner = null;
 var dataPtr = null;
 var dataHeap = null;
@@ -112,22 +129,21 @@ function updateCharts(dataJson) {
   for (let i = 0; i < timeArrayMS.length; i++) {
     var x = timeArrayMS[i];
     var y = preassurePA[i];
-    movingSequence.push(y);
-    movingChartData.push([x, y]);
-
-    if (chartTimeSeries.series[0].data.length == chartTimeSeriesDuration) {
-      chartTimeSeries.series[0].addPoint([x, y], false, true, false);
-    } else if (chartTimeSeries.series[0].data.length > chartTimeSeriesDuration) {
-      console.log("Setting chart data to", movingChartData.slice(-chartTimeSeriesDuration));
-      chartTimeSeries.series[0].setData(movingChartData.slice(-chartTimeSeriesDuration));
-    } else {
-      chartTimeSeries.series[0].addPoint([x, y], false, false, false);
-    }
-    chartTimeSeries.update({}, true, false, false);
+    measurement_buffer.push(y);
+    times_buffer.push(x);
   }
+  // We never show data older than 5 minutes = 15000 samples @ 50 Hz
+  measurement_buffer = measurement_buffer.slice(-15000);
+  times_buffer = times_buffer.slice(-15000);
 
-  movingSequence = movingSequence.slice(-4096);
-  var fft_time_sequence = Array.from(movingSequence.slice(-fft_window));
+  // Update data in time chart
+  chart_data_time = times_buffer.slice(-chartTimeSeriesDuration);
+  chart_data_preassure = measurement_buffer.slice(-chartTimeSeriesDuration);
+  chart_data = chart_data_time.map(function(val, idx) { return [val, chart_data_preassure[idx]] });
+  chartTimeSeries.series[0].setData(chart_data, false, false, false);
+  chartTimeSeries.update({}, true, false, false);
+
+  var fft_time_sequence = Array.from(measurement_buffer.slice(-fft_window));
   if (fft_time_sequence.length < fft_window) {
     // pad up with zeros
     var padding = Array(fft_window - fft_time_sequence.length).fill(0);
@@ -146,29 +162,41 @@ function updateCharts(dataJson) {
 
   var spectrum = fourier_transform(fft_time_sequence);
 
-  var test = [];
+  var spectrumChartData = [];
   for (var i = 0; i < spectrum.length; i++) {
     var hz = i * 50.0 / fft_time_sequence.length;
-    test[i] = [hz, spectrum[i] ** 0.5 * 2 / fft_time_sequence.length];
+    spectrumChartData[i] = [hz, spectrum[i] ** 0.5 * 2 / fft_time_sequence.length];
   }
-  chartSpectrum.series[0].setData(test);
+  chartSpectrum.series[0].setData(spectrumChartData, false, false, false);
+  chartSpectrum.series[1].setData(spectrumChartData, false, false, false);
   chartSpectrum.update({}, true, false, false);
-
 }
 
+var next_start_idx = 0;
+function load_sensor_data(xmlhttp) {
+  if (xmlhttp.readyState == XMLHttpRequest.DONE && xmlhttp.status == 200) {
+    var measurements = JSON.parse(xmlhttp.responseText);
+    next_start_idx = measurements["next_start_idx"];
+    updateCharts(measurements);
+  }
+}
 
+// initially load all available sensor data
+var initial_sensor_data_request = new XMLHttpRequest();
+initial_sensor_data_request.onreadystatechange = function() { load_sensor_data(this) };
+initial_sensor_data_request.open("GET", `/measurements?start_with_idx=${next_start_idx}&max_length=15000`, false);
+initial_sensor_data_request.send();
+
+// poll new sensor data
 setInterval(function() {
   var xmlhttp = new XMLHttpRequest();
-  xmlhttp.onreadystatechange = function() {
-    if (this.readyState == 4 && this.status == 200) {
-      var measurements = JSON.parse(this.responseText);
-      updateCharts(measurements);
-    }
-  };
-  xmlhttp.open("GET", "/measurements", true);
+  xmlhttp.onreadystatechange = function() { load_sensor_data(this) };
+  xmlhttp.open("GET", `/measurements?start_with_idx=${next_start_idx}&max_length=15000`, true);
   xmlhttp.send();
-}, 200);
+}, 200); // load new data every 200 ms
 
+
+// Time Series range
 document.getElementById("timeSeriesRange").value = chartTimeSeriesDuration;
 document.getElementById("timeSeriesRangeIndicator").innerHTML = "Dargestellte Zeitspanne: " + chartTimeSeriesDuration / 50 + " seconds";
 // Slider for time duration 
@@ -178,6 +206,7 @@ document.getElementById("timeSeriesRange").oninput = function() {
   document.getElementById("timeSeriesRangeIndicator").innerHTML = "Dargestellte Zeitspanne: " + val / 50 + " seconds";
 };
 
+// Spectrum range
 document.getElementById("SpectrumRangeIndicator").innerHTML = "Spektrum Analyse Dauer: " + 2 ** document.getElementById("spectrumRange").value / 50.0 + " seconds (" + 2 ** document.getElementById("spectrumRange").value + " samples)";
 document.getElementById("spectrumRange").oninput = function() {
   var val = 2 ** document.getElementById("spectrumRange").value;
@@ -185,3 +214,19 @@ document.getElementById("spectrumRange").oninput = function() {
   initialize_pfft(val);
   document.getElementById("SpectrumRangeIndicator").innerHTML = "Spektrum Analyse Dauer: " + val / 50.0 + " seconds (" + val + " samples)";
 };
+
+// By default use linear spectrum and hide line chart
+chartSpectrum.series[0].hide();
+
+// Spectrum logarithmic
+function handleSpectrumLogSwitch(checkbox) {
+  if (checkbox.checked) {
+    console.log("Spectrum Log enabled");
+    chartSpectrum.xAxis[0].update({ type: "logarithmic" });
+    chartSpectrum.series[0].show();
+  } else {
+    console.log("Spectrum Log disabled");
+    chartSpectrum.xAxis[0].update({ type: "linear" });
+    chartSpectrum.series[0].hide();
+  }
+}
