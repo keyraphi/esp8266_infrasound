@@ -1,0 +1,6 @@
+[submodule "makeEspArduino"]
+	path = makeEspArduino
+	url = https://github.com/plerup/makeEspArduino
+[submodule "esp8266"]
+	path = esp8266
+	url = https://github.com/esp8266/Arduino.git
