@@ -1,9 +1,10 @@
 function showDownloadOptions(downloadOptions) {
   downloadList = document.getElementById("download-list");
-  for (let i = 0; i < downloadOptions["download-links"].length; i++) {
+  for (let i = 0; i < downloadOptions["files"].length; i++) {
     var downloadElement = document.createElement("a");
-    downloadElement.setAttribute("href", downloadOptions["download-links"][i]);
-    var linkText = document.createTextNode(downloadOptions["link-texts"][i]);
+    var endpoint = "/download?&file=" + downloadOptions["files"][i];
+    downloadElement.setAttribute("href",endpoint);
+    var linkText = document.createTextNode(downloadOptions["files"][i]);
     downloadElement.appendChild(linkText);
     downloadElement.classList.add("list-group-item");
     downloadElement.classList.add("list-group-item-action");

@@ -50,15 +50,20 @@ def handle_measurement_request():
 def handle_downloads_request():
     response = json.dumps(
         {
-            "download-links": [
-                "/test/file_example_WAV_1MG.wav",
-                "/test/file_example_WAV_2MG.wav",
+            "files": [
+                "0",
+                "0_1",
+                "1235467876",
             ],
-            "link-texts": ["file_example_WAV_1MG.wav", "file_example_WAV_2MG.wav"],
         }
     )
     return response
 
+@app.route("/download", methods=["GET"])
+def handle_download_request():
+    filename = int(request.args.get("file"))
+    print("file:", filename, "was requested")
+    return ("", 204)
 
 @app.route("/set_wifi", methods=["POST"])
 def handle_wifi_form():
