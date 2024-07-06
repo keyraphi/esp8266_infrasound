@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <AsyncJson.h>
-#include <AsyncTCP.h>
 #include <ESP8266TimerInterrupt.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266_ISR_Timer.h>
@@ -10,23 +9,20 @@
 #include <LittleFS.h>
 #include <NTPClient.h>
 #include <SdFat.h>
-#include <WiFi.h>
 #include <WiFiUdp.h>
-#include <cstdint>
-#include <future>
 #include <iostream/ArduinoStream.h>
 
 #include "SDP600.h"
-#include "webserver_endpoints.h"
 
 #define SPI_SPEED SD_SCK_MHZ(4)
 
 String ssid;
 String password;
 AsyncWebServer server(80);
+
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
-const char *wifi_acces_file = "wifi_ssid_pw.txt";
+const char *wifi_acces_file_path = "wifi_ssid_pw.txt";
 
 SDP600 sensor;
 
@@ -37,29 +33,37 @@ ESP8266_ISR_Timer ISR_Timer;        // virtual timers
 uint32_t time_interval_sensor = 20; // poll sensor every 20 ms
 
 // SSD Chip Select pin
-const int sd_chip_select = 8;
+const int sd_chip_select = SS;
 SdFs sd;
-FsFile file;
+FsFile measurement_file;
+FsFile html_file;
 
 // Printing and reading from USB with cout and cin
 ArduinoOutStream cout(Serial);
 // input buffer for line
-char cinBuf[64];
+char cinBuf[32];
 ArduinoInStream cin(Serial, cinBuf, sizeof(cinBuf));
 
 // Some global variables to enable or disable features based on connected
 // hardware
 bool is_sd_card_available = false;
 bool poll_sensor_now = false;
-bool is_webserver_available = false;
 bool is_wifi_client = false;
 
 // Some global variables and buffers
 uint64_t start_timestamp;
-const uint32_t buffer_size = 1024;
+const uint32_t buffer_size = 32;
 float measurements_buffer[buffer_size];
 uint64_t timestamps_buffer[buffer_size];
 uint32_t buffer_idx = 0;
+String file_name;
+
+IPAddress local_IP(192, 168, 4, 1);
+IPAddress gateway(192, 168, 4, 1);
+IPAddress subnet(255, 255, 255, 0);
+
+void initWifi();
+void initWebserver();
 
 void reformatMsg() {
   cout << F("Try reformatting the card.  For best results use\n");
@@ -68,90 +72,234 @@ void reformatMsg() {
 }
 
 void hardwareTimerHandler() { ISR_Timer.run(); }
-void pollSensorISR() {
-  cout << "DEBUG: Polling Sensor ISR" << endl;
-  poll_sensor_now = true;
-}
+void pollSensorISR() { poll_sensor_now = true; }
 
 bool initSdCard() {
-  cout << F("\nSPI pins:\n");
-  cout << F("MISO: ") << int(MISO) << endl;
-  cout << F("MOSI: ") << int(MOSI) << endl;
-  cout << F("SCK:  ") << int(SCK) << endl;
-#if false
-  if (!sd.begin(sd_chip_select, SPI_SPEED)) { // this crashes the board - try with connected sd module!
+  cout << "Initializing SD card" << endl;
+  if (!sd.begin(sd_chip_select, SPI_SPEED)) { // this crashes the board - try
+                                              // with connected sd module!
     if (sd.card()->errorCode()) {
-      cout << F(
-          "\nSD initialization failed.\n"
-          "Do not reformat the card!\n"
-          "Is the card correctly inserted?\n"
-          "Is chipSelect set to the correct value?\n"
-          "Does another SPI device need to be disabled?\n"
-          "Is there a wiring/soldering problem?\n");
+      cout << F("\nSD initialization failed.\n"
+                "Do not reformat the card!\n"
+                "Is the card correctly inserted?\n"
+                "Is chipSelect set to the correct value?\n"
+                "Does another SPI device need to be disabled?\n"
+                "Is there a wiring/soldering problem?\n");
       cout << F("\nerrorCode: ") << hex << showbase;
       cout << int(sd.card()->errorCode());
       cout << F(", errorData: ") << int(sd.card()->errorData());
       cout << dec << noshowbase << endl;
-      return;
+      return false;
     }
     cout << F("\nCard successfully initialized.\n");
-   if (sd.vol()->fatType() == 0) {
+    if (sd.vol()->fatType() == 0) {
       cout << F("Can't find a valid FAT16/FAT32/exFAT partition.\n");
       reformatMsg();
-      return;
+      return false;
     }
     cout << F("Can't determine error type\n");
-    return;
+    return false;
   }
   cout << F("\nCard successfully initialized.\n");
   cout << endl;
   is_sd_card_available = true;
-#endif
-  return false;
-}
-
-bool load_wifi_credentials() {
-  cout << "Loading WiFi credentials from LittleFS" << endl;
-  if (!LittleFS.begin()) {
-    cout << "Could not initialize LittleFS" << endl;
-    return false;
-  }
-  File wifi_credential_file = LITTLEFS.open(wifi_acces_file, "r");
-  if (!wifi_credential_file) {
-    cout << "WiFi credential file does not exist: " << wifi_credential_file
-         << endl;
-    return false
-  }
-  cout << "Loading WiFi credentials" << endl;
-  ssid = wifi_credential_file.readStringUntil('\n').c_str();
-  password = wifi_credential_file.readStringUntil('\n').c_str();
-  wifi_credential_file.close() cout << "Loading WiFi credentials" << endl;
-  if (ssid_str.length() < 1 || password_str.length() < 1) {
-    cout << "Credential file doesn't contain ssid and password" << endl;
-    return false;
-  }
-  cout << "Loaded WiFi credentials for ssid " << ssid << endl;
-}
-bool write_wifi_credentials() {
-  cout << "Writing WiFi credentials for ssid:" << ssid << endl;
-  File wifi_credential_file = LITTLEFS.open(wifi_credential_file, "w");
-  // TODO checks necessary?
-  wifi_credential_file.println(ssid);
-  wifi_credential_file.println(password);
-  file.close();
   return true;
 }
 
-bool initWebserver() {
-  if (is_wifi_client) {
-    server.serveStatic("/", SPIFFS, "/www/static/");
-  } else {
-    server.serveStatic("/", SPIFFS, "/www/static/").setDefaultFile("wifi.html");
+bool load_wifi_credentials() {
+  cout << "Loading WiFi credentials from SDCard" << endl;
+  FsFile wifi_credential_file;
+  if (!wifi_credential_file.open(wifi_acces_file_path, O_RDONLY)) {
+    cout << "WiFi credential file does not exist: " << wifi_credential_file
+         << endl;
+    return false;
   }
-  server.onNotFound(notFound);
+  cout << "Loading WiFi credentials" << endl;
+  char buffer;
+  // read ssid
+  ssid = "";
+  while (wifi_credential_file.read(&buffer, 1) >= 1) {
+    if (buffer == '\n') {
+      break;
+    }
+    ssid += buffer;
+  }
+  // read password
+  password = "";
+  while (wifi_credential_file.read(&buffer, 1) >= 1) {
+    if (buffer == '\n') {
+      break;
+    }
+    password += buffer;
+  }
+  wifi_credential_file.close();
+  cout << "Loaded WiFi credentials: " << ssid << ", " << password << endl;
+  return true;
+}
+
+bool write_wifi_credentials() {
+  cout << "Writing WiFi credentials for ssid:" << ssid << endl;
+  FsFile wifi_credential_file;
+  if (!wifi_credential_file.open(wifi_acces_file_path, O_WRONLY | O_CREAT)) {
+    return false;
+  }
+  wifi_credential_file.print(ssid + "\n" + password + "\n");
+  wifi_credential_file.close();
+  return true;
+}
+
+void onNotFound(AsyncWebServerRequest *request) {
+  cout << "A unknown request was sent" << endl;
+  request->send(404, "text/plain", "Not found");
+}
+
+void onGetMeasurement(AsyncWebServerRequest *request) {
+  cout << "/measurements were requested" << endl;
+  uint32_t start_with_idx, max_length;
+  if (request->hasParam("start_with_idx")) {
+    String start_with_idx_str = request->getParam("start_with_idx")->value();
+    char *end_ptr;
+    start_with_idx = strtoul(start_with_idx_str.c_str(), &end_ptr, 10);
+  } else {
+    cout << "INFO: /measurement request doesn't have start_with_idx" << endl;
+    start_with_idx = 0;
+  }
+  if (request->hasParam("max_length")) {
+    String max_length_str = request->getParam("max_length")->value();
+    char *end_ptr;
+    max_length = strtoul(max_length_str.c_str(), &end_ptr, 10);
+  } else {
+    cout << "WARNING: /measurement request doesn't have max_length" << endl;
+    max_length = 5000;
+  }
+  AsyncJsonResponse *response = new AsyncJsonResponse();
+  response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
+  JsonObject root = response->getRoot();
+  uint32_t next_start_idx = 42; // TODO
+  root["next_start_idx"] = next_start_idx;
+  JsonArray ms_data = root["ms"].to<JsonArray>();
+  JsonArray preassure_data = root["preassure"].to<JsonArray>();
+  for (int i = 0; i < 5; i++) {
+    ms_data.add(i);
+    preassure_data.add(42);
+  }
+  response->setLength();
+  cout << "sending response" << endl;
+  request->send(response);
+}
+
+void onGetDownloads(AsyncWebServerRequest *request) {
+  cout << "/downloads were requested" << endl;
+  AsyncJsonResponse *response = new AsyncJsonResponse();
+  response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
+  JsonObject root = response->getRoot();
+  JsonArray file_list = root["files"].to<JsonArray>();
+
+  file_list.add("testfile");
+  file_list.add("anothertestfile");
+  file_list.add("last_test_file");
+
+  response->setLength();
+  request->send(response);
+}
+
+void onStaticFile(AsyncWebServerRequest *request) {
+  String url = request->url();
+  String contentType;
+  if (url.endsWith(".html"))
+    contentType = "text/html";
+  else if (url.endsWith(".js"))
+    contentType = "application/javascript";
+  else if (url.endsWith(".wasm"))
+    contentType = "application/wasm";
+  else if (url.endsWith(".ico"))
+    contentType = "image/x-icon";
+  else
+    contentType = "text/plain";
+
+  String ssd_path = "/www/static" + url;
+
+  html_file.close();
+  if (!html_file.open(ssd_path.c_str(), O_RDONLY)) {
+    request->send(200, "text/plain", "Failed to open file: " + ssd_path);
+    return;
+  }
+  // send 128 bytes as html text
+  AsyncWebServerResponse *response = request->beginChunkedResponse(
+      contentType.c_str(),
+      [](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+        // Write up to "maxLen" bytes into "buffer" and return the amount
+        // written. index equals the amount of bytes that have been already
+        // sent You will be asked for more data until 0 is returned Keep in
+        // mind that you can not delay or yield waiting for more data!
+        return html_file.read(buffer, maxLen);
+      });
+  response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
+  request->send(response);
+}
+
+void onIndex(AsyncWebServerRequest *request) {
+  String RedirectUrl = "http://";
+  if (ON_STA_FILTER(request)) {
+    RedirectUrl += WiFi.localIP().toString();
+    RedirectUrl += "/index.html";
+  } else {
+    RedirectUrl += WiFi.softAPIP().toString();
+    RedirectUrl += "/wifi.html";
+  }
+  request->redirect(RedirectUrl);
+}
+
+void onPostWifi(AsyncWebServerRequest *request) {
+  cout << "/set_wifi credentials were sent" << endl;
+  int params = request->params();
+  for (int i = 0; i < params; i++) {
+    AsyncWebParameter *p = request->getParam(i);
+    if (p->isPost()) {
+      if (p->name() == "ssid") {
+        ssid = p->value();
+      } else if (p->name() == "password") {
+        password = p->value();
+      }
+    }
+  }
+  cout << "DEBUG: SSID: " << ssid << " Password: " << password << endl;
+  if (ssid.length() == 0) {
+    cout << "SSID length is 0... ignoring data" << endl;
+    request->send(200);
+    return;
+  }
+  if (write_wifi_credentials()) {
+    cout << "WiFi credentials successfully updated ... restarting" << endl;
+    ESP.restart();
+  } else {
+    cout << "Couldn't write WiFi credentials" << endl;
+    request->send(200);
+  }
+}
+
+void initWebserver() {
+
+  cout << "Serving static files" << endl;
+  server.on("/", HTTP_GET, onIndex);
+  server.on("/index.html", HTTP_GET, onStaticFile);
+  server.on("/downloads.html", HTTP_GET, onStaticFile);
+  server.on("/wifi.html", HTTP_GET, onStaticFile);
+  server.on("/download_client.js", HTTP_GET, onStaticFile);
+  server.on("/infrasound_client.js", HTTP_GET, onStaticFile);
+  server.on("/favicon.ico", HTTP_GET, onStaticFile);
+  server.on("/pffft/pffft.js", HTTP_GET, onStaticFile);
+  server.on("/pffft/pffft.wasm", HTTP_GET, onStaticFile);
+
+  cout << "Serving /measurements" << endl;
   server.on("/measurements", HTTP_GET, onGetMeasurement);
+  cout << "serving /downloads" << endl;
   server.on("/downloads", HTTP_GET, onGetDownloads);
+  cout << "serving /set_wifi" << endl;
   server.on("/set_wifi", HTTP_POST, onPostWifi);
+  server.onNotFound(onNotFound);
+
+  server.begin();
 }
 
 void configureAccessPoint() {
@@ -164,7 +312,7 @@ void configureAccessPoint() {
   }
   cout << "Access point was set up." << endl;
   cout << "SSID: 'infrasound-sensor', no password, IP-Address:"
-       << WiFi.softAPIP() << endl;
+       << WiFi.softAPIP().toString() << endl;
 }
 
 void initWifi() {
@@ -175,75 +323,15 @@ void initWifi() {
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
   }
-  if (WiFi.waitForConnectionResult() != WL_CONNECTED) {
+  if (WiFi.waitForConnectResult() != WL_CONNECTED) {
     cout << "Failed to connect to: " << ssid << endl;
-    cout << "Configuring own Networ Access Point" << endl;
+    cout << "Configuring own Network Access Point" << endl;
     configureAccessPoint();
-    return false;
+    is_wifi_client = false;
+    return;
   }
-  cout << "IP Address: " << WiFi.localIP() << endl;
+  cout << "IP Address: " << WiFi.localIP().toString() << endl;
   is_wifi_client = true;
-}
-
-void notFound(AsyncWebServerRequest *request) {
-  request->send(404, "text/plain", "Not found");
-}
-
-void onGetMeasurement(AsyncWebServerRequest *request) {
-  uint32_t start_with_idx, max_length;
-  if (request->hasParam("start_with_idx")) {
-    String start_with_idx_str = request->getParam("start_with_idx")->value();
-    start_with_idx = strtoul(start_with_idx_str);
-  } else {
-    start_with_idx = 0;
-  }
-  if (request->hasParam("max_length")) {
-    String max_length_str = request->getParam("max_length")->value();
-    max_length = strtoul(max_length_str);
-  } else {
-    max_length = 5000;
-  }
-  AsyncJsonResponse *response = new AsyncJsonResponse();
-  response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
-  JsonObject &root = response->getRoot();
-  uint32_t next_start_idx = 42; // TODO
-  root["next_start_idx"] = next_start_idx;
-  root["ms"] = {1, 2, 3, 4, 5, 6};                        // TODO
-  root["preassure"] = {-2.0f, -1.0f, 0.f, 1.f, 2.f, 3.f}; // TODO
-  respon->setLength();
-  request->send(response);
-}
-
-void onGetDownloads(AsyncWebServerRequest *request) {
-  AsyncJsonResponse *response = new AsyncJsonResponse();
-  response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
-  JsonObject &root = response->getRoot();
-  root["download-links"] = "download-links";
-  root["link-texts"] = "link-texts";
-  response->setLength();
-  request->send(response);
-}
-
-void onPostWifi(AsyncWebServerRequest *request) {
-  if (request->hasParam("ssid") && request->hasParam("password")) {
-    ssid = request->getParam("ssid")->value();
-    password = request->getParam("ssid")->value();
-    if (write_wifi_credentials()) {
-      cout << "WiFi credentials successfully updated" << endl;
-    } else {
-      cout << "Couldn't write wif credentials" << endl;
-    }
-    // shutdown current webserver
-    cout << "Trying to connect to new WiFi: " << ssid << endl;
-    server.end();
-    if (is_wifi_client) {
-      WiFi.end();
-    } else {
-      WiFi.softAPdisconnect(true);
-    }
-    initWifi();
-    initWebserver();
-  }
 }
 
 void initTimestamp() {
@@ -256,9 +344,9 @@ void initTimestamp() {
 }
 
 void setup() {
-  Serial.begin(38400);
+  Serial.begin(115200);
   while (!Serial) {
-    yield;
+    delay(1);
   }
   delay(500);
 
@@ -268,6 +356,11 @@ void setup() {
   cout << ARDUINO_BOARD << endl;
   cout << "##########################" << endl;
 
+  if (!LittleFS.begin()) {
+    cout << "Could not initialize LittleFS" << endl;
+    return;
+  }
+  LittleFS.format();
   // Initialize Sensor
   cout << "Initializing Sensor" << endl;
   sensor.begin();
@@ -286,26 +379,27 @@ void setup() {
   }
 
   // Setup Webserver
-  is_webserver_available = initWebserver();
+  initWebserver();
 
   // Setup Timers based on enabled features
-  cout << "Initializing Timers" << endl;
-  cout << "CPU Frequency = " << F_CPU / 1000000 << endl;
-  cout << " MHz" << endl;
-  // Hardware interval = 1ms set in microsecs
-  if (ITimer.attachInterruptInterval(1 * 1000, hardwareTimerHandler)) {
-    ISR_Timer.setInterval(time_interval_sensor, pollSensorISR);
-  } else {
-    cout << "Can't set ITimer correctly. Select another freq. or interval"
-         << endl;
-  }
+  /*  cout << "Initializing Timers" << endl;
+    cout << "CPU Frequency = " << F_CPU / 1000000 << endl;
+    cout << " MHz" << endl;
+    // Hardware interval = 1ms set in microsecs
+    if (ITimer.attachInterruptInterval(1 * 1000, hardwareTimerHandler)) {
+      ISR_Timer.setInterval(time_interval_sensor, pollSensorISR);
+    } else {
+      cout << "Can't set ITimer correctly. Select another freq. or interval"
+           << endl;
+    }
+    */
 }
 
-void openMeasurementFile() {
+void createMeasurementFile() {
   if (!is_sd_card_available) {
-    cout
-        << "Error: Couldn't write measurements to disk - SD card not available."
-        << endl;
+    cout << "Error: Couldn't write measurements to disk - SD card not "
+            "available."
+         << endl;
     return;
   }
   if (!sd.exists("/measurements")) {
@@ -316,34 +410,65 @@ void openMeasurementFile() {
       return;
     }
   }
-  String file_name = "/measurements/" + String(start_timestamp);
-  if (sd.exists(file_name)) {
-    cout << file_name << " exists already." << endl;
+  file_name = "/measurements/" + String(start_timestamp);
+  if (measurement_file.isOpen()) {
+    return;
+  }
+  uint8_t retries = 0;
+  while (sd.exists(file_name.c_str())) {
+    ++retries;
+    file_name =
+        "/measurements/" + String(start_timestamp) + "_" + String(retries);
+  }
+  cout << "Creating file " << file_name << endl;
+  if (!measurement_file.open(file_name.c_str(), O_WRONLY | O_CREAT)) {
+    cout << "Failed to create file" << endl;
+  }
+}
 
+void openMeasurementFile() {
+  cout << "Appending to file" << endl;
+  if (measurement_file.isOpen()) {
+    return;
+  }
+  if (!measurement_file.open(file_name.c_str(),
+                             O_WRONLY | O_APPEND | O_AT_END)) {
+    cout << "Failed to open file " << file_name << endl;
   }
 }
 
 void write_buffers_to_disk() {
-  if (!file) {
-    openMeasurementFile();
+  while (!measurement_file) {
+    createMeasurementFile();
   }
-
-  void store_measurement(const &uint64_t timestamp, float measurement) {
-    timestamps_buffer[buffer_idx] = timestamp;
-    measurements_buffer[buffer_idx] = measurement;
-    ++buffer_idx;
-    if (buffer_idx) >= buffer_size) {
-        write_buffers_to_disk();
-        buffer_idx = 0;
-      }
-  }
-
-  void loop() {
-    if (poll_sensor_now) {
-      cout << "TODO: poll sensor here" << endl;
-      uint64_t timestamp = start_timestamp + millis();
-      float measurement = sensor.read();
-      store_measurement(timestamp, measurement);
-      poll_sensor_now = false;
+  openMeasurementFile();
+  // Write buffers
+  for (uint32_t i = 0; i < buffer_idx; ++i) {
+    if (measurement_file.write((uint8_t *)&timestamps_buffer[i], 8) != 8) {
+      cout << "Writing timestamp failed" << endl;
+    }
+    if (measurement_file.write((uint8_t *)&measurements_buffer[i], 4) != 4) {
+      cout << "Writing measurement failed" << endl;
     }
   }
+  measurement_file.flush();
+}
+
+void store_measurement(const uint64_t &timestamp, float measurement) {
+  timestamps_buffer[buffer_idx] = timestamp;
+  measurements_buffer[buffer_idx] = measurement;
+  ++buffer_idx;
+  if (buffer_idx >= buffer_size) {
+    write_buffers_to_disk();
+    buffer_idx = 0;
+  }
+}
+
+void loop() {
+  if (poll_sensor_now) {
+    uint64_t timestamp = start_timestamp + millis();
+    float measurement = sensor.read();
+    store_measurement(timestamp, measurement);
+    poll_sensor_now = false;
+  }
+}
