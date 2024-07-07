@@ -1,3 +1,4 @@
+
 #include <Arduino.h>
 #include <AsyncJson.h>
 #include <ESP8266TimerInterrupt.h>
@@ -10,6 +11,7 @@
 #include <NTPClient.h>
 #include <SdFat.h>
 #include <WiFiUdp.h>
+#include <cstdint>
 #include <iostream/ArduinoStream.h>
 
 #include "SDP600.h"
@@ -35,6 +37,7 @@ uint32_t time_interval_sensor = 20; // poll sensor every 20 ms
 // SSD Chip Select pin
 const int sd_chip_select = SS;
 SdFs sd;
+FsFile timestamp_file;
 FsFile measurement_file;
 FsFile html_file;
 
@@ -49,14 +52,18 @@ ArduinoInStream cin(Serial, cinBuf, sizeof(cinBuf));
 bool is_sd_card_available = false;
 bool poll_sensor_now = false;
 bool is_wifi_client = false;
+bool is_measurement_file_free = true;
 
 // Some global variables and buffers
 uint64_t start_timestamp;
-const uint32_t buffer_size = 32;
-float measurements_buffer[buffer_size];
-uint64_t timestamps_buffer[buffer_size];
+const uint32_t measurement_buffer_size = 64;
+float measurements_buffer[measurement_buffer_size];
+uint64_t timestamps_buffer[measurement_buffer_size];
 uint32_t buffer_idx = 0;
-String file_name;
+String timestamp_file_name;
+String measurement_file_name;
+uint32_t ms_returned_already = 0;
+uint32_t measurements_returned_already = 0;
 
 IPAddress local_IP(192, 168, 4, 1);
 IPAddress gateway(192, 168, 4, 1);
@@ -133,7 +140,7 @@ bool load_wifi_credentials() {
     password += buffer;
   }
   wifi_credential_file.close();
-  cout << "Loaded WiFi credentials: " << ssid << ", " << password << endl;
+  cout << "Loaded WiFi credentials for ssid: " << ssid << endl;
   return true;
 }
 
@@ -151,6 +158,116 @@ bool write_wifi_credentials() {
 void onNotFound(AsyncWebServerRequest *request) {
   cout << "A unknown request was sent" << endl;
   request->send(404, "text/plain", "Not found");
+}
+
+// buffer_size must be at least 30 bytes large
+int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
+                            uint32_t number_of_measurements,
+                            uint32_t next_start_idx) {
+  size_t bytes_in_buffer = 0;
+  if (ms_returned_already == 0) {
+    memcpy(buffer, "{\n\"ms\":[", 8);
+    bytes_in_buffer += 8;
+  }
+
+  char number_buffer[21]; // uint64_t can have 20 digits
+  // Writing timestamps into buffer
+  if (ms_returned_already < number_of_measurements) {
+    uint64_t ms;
+    while (ms_returned_already < number_of_measurements) {
+      if (timestamp_file.read(&ms, 8) < 8) {
+        // there are no more timestamps in the file
+        cout << "WARNING: File ran out of timestamps" << endl;
+      }
+      // convert ms into asci
+      size_t string_start_idx = sizeof(number_buffer) - 1;
+      number_buffer[string_start_idx] = '\0';
+      do {
+        number_buffer[--string_start_idx] =
+            ms % 10 + '0'; // add '0' = 48 in ascii
+        ms /= 10;
+      } while (ms != 0);
+      size_t digit_count = sizeof(number_buffer) - 1 - string_start_idx;
+      memcpy(buffer + bytes_in_buffer, number_buffer + string_start_idx,
+             digit_count);
+      bytes_in_buffer += digit_count;
+
+      ++ms_returned_already;
+      if (ms_returned_already == number_of_measurements) {
+        buffer[bytes_in_buffer++] = ']';
+        buffer[bytes_in_buffer++] = ',';
+        buffer[bytes_in_buffer++] = '\n';
+      } else {
+        buffer[bytes_in_buffer++] = ',';
+        if (buffer_size - bytes_in_buffer < 23) {
+          // potentially not enough space in buffer for next timestamp
+          return bytes_in_buffer;
+        }
+      }
+    }
+  }
+  // At this point it is guaranteed that the part of the json with the "ms" is
+  // completely written to the buffer
+  if (buffer_size - bytes_in_buffer < 23) {
+    return bytes_in_buffer;
+  }
+  if (measurements_returned_already == 0) {
+    memcpy(buffer + bytes_in_buffer, "\"preassure\":[", 13);
+    bytes_in_buffer += 13;
+  }
+  float preassure;
+  while (measurements_returned_already < number_of_measurements) {
+    if (measurement_file.read(&preassure, 4) < 4) {
+      // there are no more timestamps in the file
+      cout << "WARNING: File ran out of measurements" << endl;
+    }
+    // convert preassure into asci - left aligned string
+    dtostrf(preassure, -1, 7, number_buffer);
+    uint32_t digits = strlen(number_buffer);
+    memcpy(buffer + bytes_in_buffer, number_buffer, digits);
+    bytes_in_buffer += digits;
+    ++measurements_returned_already;
+    if (measurements_returned_already == number_of_measurements) {
+      buffer[bytes_in_buffer++] = ']';
+      buffer[bytes_in_buffer++] = ',';
+      buffer[bytes_in_buffer++] = '\n';
+    } else {
+      buffer[bytes_in_buffer++] = ',';
+      if (buffer_size - bytes_in_buffer < 23) {
+        // potentially not enough space in buffer for next measurement
+        return bytes_in_buffer;
+      }
+    }
+  }
+
+  if (bytes_in_buffer == 0) {
+    measurements_returned_already = 0;
+    ms_returned_already = 0;
+    measurement_file.close();
+    timestamp_file.close();
+    is_measurement_file_free = true;
+    return bytes_in_buffer;
+  }
+
+  if (bytes_in_buffer - buffer_size < ...) {
+    return bytes_in_buffer;
+  }
+  memcpy(buffer, "next_start_idx:" , 15);
+  bytes_in_buffer += 15;
+  // convert next_start_idx into asci
+  size_t string_start_idx = sizeof(number_buffer) - 1;
+  number_buffer[string_start_idx] = '\0';
+  do {
+    number_buffer[--string_start_idx] =
+        next_start_idx % 10 + '0'; // add '0' = 48 in ascii
+    ms /= 10;
+  } while (next_start_idx != 0);
+  size_t digit_count = sizeof(number_buffer) - 1 - string_start_idx;
+  memcpy(buffer + bytes_in_buffer, number_buffer + string_start_idx,
+         digit_count);
+  bytes_in_buffer += digit_count;
+
+  return bytes_in_buffer;
 }
 
 void onGetMeasurement(AsyncWebServerRequest *request) {
@@ -172,23 +289,76 @@ void onGetMeasurement(AsyncWebServerRequest *request) {
     cout << "WARNING: /measurement request doesn't have max_length" << endl;
     max_length = 5000;
   }
-  AsyncJsonResponse *response = new AsyncJsonResponse();
-  response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
-  JsonObject root = response->getRoot();
-  uint32_t next_start_idx = 42; // TODO
-  root["next_start_idx"] = next_start_idx;
-  JsonArray ms_data = root["ms"].to<JsonArray>();
-  JsonArray preassure_data = root["preassure"].to<JsonArray>();
-  for (int i = 0; i < 5; i++) {
-    ms_data.add(i);
-    preassure_data.add(42);
+
+  if (!is_measurement_file_free) {
+    cout << "WARNING: file \'" << measurement_file_name
+         << "\' is not free! Not continuing" << endl;
+    request->send(500);
+    return;
   }
-  response->setLength();
-  cout << "sending response" << endl;
+  is_measurement_file_free = false;
+  // Open files with timestamps and measurements
+  if (!timestamp_file.open(timestamp_file_name.c_str(), O_RDONLY)) {
+    cout << "Failed to open timestamp file: " << timestamp_file_name << endl;
+    request->send(500);
+    return;
+  }
+  if (!measurement_file.open(measurement_file_name.c_str(), O_RDONLY)) {
+    cout << "Failed to open measurement file: " << measurement_file_name
+         << endl;
+    timestamp_file.close();
+    request->send(500);
+    return;
+  }
+
+  // seek to starting point in files such that mx_length timestamp/measurement
+  // pairs are returned
+  uint32_t n_measurements_in_file = (uint32_t)measurement_file.fileSize() / 4;
+  max_length = min(max_length, n_measurements_in_file);
+  uint32_t seek_to_measurement =
+      max(start_with_idx, n_measurements_in_file - max_length);
+  // recompute how many measurements should be read:
+  max_length = n_measurements_in_file - seek_to_measurement;
+  uint32_t next_start_idx = start_with_idx + max_length;
+  // seek accordingly
+  uint32_t bytes_to_seek_timestamp = seek_to_measurement * 8;
+  uint32_t bytes_to_seek_measurement = seek_to_measurement * 4;
+
+  if (!timestamp_file.seek(bytes_to_seek_timestamp)) {
+    cout << "Failed to seek back " << bytes_to_seek_timestamp << " bytes in "
+         << timestamp_file_name << endl;
+    timestamp_file.close();
+    measurement_file.close();
+    is_measurement_file_free = true;
+    request->send(500);
+    return;
+  }
+  if (!measurement_file.seek(bytes_to_seek_measurement)) {
+    cout << "Failed to seek back " << bytes_to_seek_measurement << " bytes in "
+         << measurement_file_name << endl;
+    timestamp_file.close();
+    measurement_file.close();
+    is_measurement_file_free = true;
+    request->send(500);
+    return;
+  }
+
+  AsyncWebServerResponse *response = request->beginChunkedResponse(
+      "application/json",
+      [max_length = max_length, next_start_idx = next_start_idx](uint8_t *buffer, size_t maxLen,
+                                size_t index) -> size_t {
+        // Write up to "maxLen" bytes into "buffer" and return the amount
+        // written. index equals the amount of bytes that have been already
+        // sent You will be asked for more data until 0 is returned Keep in
+        // mind that you can not delay or yield waiting for more data!
+        return generateMeasurementJson(buffer, maxLen, max_length, next_start_idx);
+      });
+  response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
   request->send(response);
 }
 
 void onGetDownloads(AsyncWebServerRequest *request) {
+  // TODO!!!
   cout << "/downloads were requested" << endl;
   AsyncJsonResponse *response = new AsyncJsonResponse();
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
@@ -219,20 +389,21 @@ void onStaticFile(AsyncWebServerRequest *request) {
 
   String ssd_path = "/www/static" + url;
 
-  html_file.close();
-  if (!html_file.open(ssd_path.c_str(), O_RDONLY)) {
-    request->send(200, "text/plain", "Failed to open file: " + ssd_path);
-    return;
-  }
   // send 128 bytes as html text
   AsyncWebServerResponse *response = request->beginChunkedResponse(
       contentType.c_str(),
-      [](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-        // Write up to "maxLen" bytes into "buffer" and return the amount
-        // written. index equals the amount of bytes that have been already
-        // sent You will be asked for more data until 0 is returned Keep in
-        // mind that you can not delay or yield waiting for more data!
-        return html_file.read(buffer, maxLen);
+      [ssd_path = ssd_path](uint8_t *buffer, size_t maxLen,
+                            size_t index) -> size_t {
+        if (!html_file.open(ssd_path.c_str(), O_RDONLY)) {
+          cout << "Failed to open html_file" << endl;
+          return 0;
+        }
+        if (!html_file.seek(index)) {
+          cout << "Failed to seek in html_file" << endl;
+        }
+        size_t read_bytes = html_file.read(buffer, maxLen);
+        html_file.close();
+        return read_bytes;
       });
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
   request->send(response);
@@ -263,7 +434,6 @@ void onPostWifi(AsyncWebServerRequest *request) {
       }
     }
   }
-  cout << "DEBUG: SSID: " << ssid << " Password: " << password << endl;
   if (ssid.length() == 0) {
     cout << "SSID length is 0... ignoring data" << endl;
     request->send(200);
@@ -343,6 +513,44 @@ void initTimestamp() {
   cout << "Starttimestamp is " << start_timestamp << " ms" << endl;
 }
 
+void createMeasurementFile() {
+  if (!is_sd_card_available) {
+    cout << "Error: Couldn't write measurements to disk - SD card not "
+            "available."
+         << endl;
+    return;
+  }
+  if (!sd.exists("/measurements")) {
+    cout << "Creating /measurements folder on sd-card" << endl;
+    if (!sd.mkdir("/measurements")) {
+      cout << "Error: Couldn't create /measurements directory. Check SD-Card."
+           << endl;
+      return;
+    }
+  }
+  measurement_file_name = "/measurements/" + String(start_timestamp);
+  timestamp_file_name = "/measurements/" + String(start_timestamp) + "_ms";
+  uint8_t retries = 0;
+  while (sd.exists(measurement_file_name.c_str())) {
+    ++retries;
+    measurement_file_name =
+        "/measurements/" + String(start_timestamp) + "_" + String(retries);
+    timestamp_file_name = measurement_file_name + "_ms";
+  }
+  cout << "Creating file " << measurement_file_name << " and "
+       << timestamp_file_name << endl;
+  if (!measurement_file.open(measurement_file_name.c_str(),
+                             O_WRONLY | O_CREAT | O_TRUNC)) {
+    cout << "Failed to create file " << measurement_file_name << endl;
+  }
+  if (!timestamp_file.open(timestamp_file_name.c_str(),
+                           O_WRONLY | O_CREAT | O_TRUNC)) {
+    cout << "Failed to create file " << timestamp_file_name << endl;
+  }
+  measurement_file.close();
+  timestamp_file.close();
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial) {
@@ -378,96 +586,79 @@ void setup() {
     initTimestamp();
   }
 
+  createMeasurementFile();
+
   // Setup Webserver
   initWebserver();
 
   // Setup Timers based on enabled features
-  /*  cout << "Initializing Timers" << endl;
-    cout << "CPU Frequency = " << F_CPU / 1000000 << endl;
-    cout << " MHz" << endl;
-    // Hardware interval = 1ms set in microsecs
-    if (ITimer.attachInterruptInterval(1 * 1000, hardwareTimerHandler)) {
-      ISR_Timer.setInterval(time_interval_sensor, pollSensorISR);
-    } else {
-      cout << "Can't set ITimer correctly. Select another freq. or interval"
-           << endl;
-    }
-    */
-}
-
-void createMeasurementFile() {
-  if (!is_sd_card_available) {
-    cout << "Error: Couldn't write measurements to disk - SD card not "
-            "available."
+  cout << "CPU Frequency = " << F_CPU / 1000000 << endl;
+  cout << " MHz" << endl;
+  // Hardware interval = 1ms set in microsecs
+  if (ITimer.attachInterruptInterval(1 * 1000, hardwareTimerHandler)) {
+    ISR_Timer.setInterval(time_interval_sensor, pollSensorISR);
+  } else {
+    cout << "Can't set ITimer correctly. Select another freq. or interval"
          << endl;
-    return;
-  }
-  if (!sd.exists("/measurements")) {
-    cout << "Creating /measurements folder on sd-card" << endl;
-    if (!sd.mkdir("/measurements")) {
-      cout << "Error: Couldn't create /measurements directory. Check SD-Card."
-           << endl;
-      return;
-    }
-  }
-  file_name = "/measurements/" + String(start_timestamp);
-  if (measurement_file.isOpen()) {
-    return;
-  }
-  uint8_t retries = 0;
-  while (sd.exists(file_name.c_str())) {
-    ++retries;
-    file_name =
-        "/measurements/" + String(start_timestamp) + "_" + String(retries);
-  }
-  cout << "Creating file " << file_name << endl;
-  if (!measurement_file.open(file_name.c_str(), O_WRONLY | O_CREAT)) {
-    cout << "Failed to create file" << endl;
   }
 }
 
-void openMeasurementFile() {
-  cout << "Appending to file" << endl;
-  if (measurement_file.isOpen()) {
-    return;
+bool openMeasurementFileWriting() {
+  if (!timestamp_file.open(timestamp_file_name.c_str(),
+                           O_WRONLY | O_APPEND | O_AT_END)) {
+    cout << "Failed to open timestamp file: " << timestamp_file_name << endl;
+    return false;
   }
-  if (!measurement_file.open(file_name.c_str(),
+  if (!measurement_file.open(measurement_file_name.c_str(),
                              O_WRONLY | O_APPEND | O_AT_END)) {
-    cout << "Failed to open file " << file_name << endl;
+    cout << "Failed to open measurement file: " << measurement_file_name
+         << endl;
+    timestamp_file.close();
+    return false;
   }
+  return true;
 }
 
 void write_buffers_to_disk() {
-  while (!measurement_file) {
-    createMeasurementFile();
+  while (!is_measurement_file_free) {
+    if (buffer_idx < measurement_buffer_size) {
+      return; // just keep it in the buffer and write it next time
+    } else {
+      yield(); // buffer is full, wait for it to be empty
+    }
   }
-  openMeasurementFile();
+  is_measurement_file_free = false;
+  if (!openMeasurementFileWriting()) {
+    return;
+  }
   // Write buffers
   for (uint32_t i = 0; i < buffer_idx; ++i) {
-    if (measurement_file.write((uint8_t *)&timestamps_buffer[i], 8) != 8) {
+    if (timestamp_file.write((uint8_t *)&timestamps_buffer[i], 8) != 8) {
       cout << "Writing timestamp failed" << endl;
     }
     if (measurement_file.write((uint8_t *)&measurements_buffer[i], 4) != 4) {
       cout << "Writing measurement failed" << endl;
     }
   }
-  measurement_file.flush();
+  timestamp_file.close();
+  measurement_file.close();
+  buffer_idx = 0;
+  is_measurement_file_free = true;
 }
 
 void store_measurement(const uint64_t &timestamp, float measurement) {
   timestamps_buffer[buffer_idx] = timestamp;
   measurements_buffer[buffer_idx] = measurement;
   ++buffer_idx;
-  if (buffer_idx >= buffer_size) {
-    write_buffers_to_disk();
-    buffer_idx = 0;
-  }
+  write_buffers_to_disk();
 }
 
 void loop() {
   if (poll_sensor_now) {
     uint64_t timestamp = start_timestamp + millis();
-    float measurement = sensor.read();
+    // TODO read infrasound sensor
+    // float measurement = sensor.read();
+    float measurement = 0.42f;
     store_measurement(timestamp, measurement);
     poll_sensor_now = false;
   }

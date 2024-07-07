@@ -193,7 +193,7 @@ setInterval(function() {
   xmlhttp.onreadystatechange = function() { load_sensor_data(this) };
   xmlhttp.open("GET", `/measurements?start_with_idx=${next_start_idx}&max_length=15000`, true);
   xmlhttp.send();
-}, 200); // load new data every 200 ms
+}, 1000); // load new data every second
 
 
 // Time Series range
