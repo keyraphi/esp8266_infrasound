@@ -249,7 +249,7 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
     return bytes_in_buffer;
   }
 
-  if (bytes_in_buffer - buffer_size < ...) {
+  if (bytes_in_buffer - buffer_size < 35 {
     return bytes_in_buffer;
   }
   memcpy(buffer, "next_start_idx:" , 15);
