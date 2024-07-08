@@ -11,8 +11,11 @@
 #include <NTPClient.h>
 #include <SdFat.h>
 #include <WiFiUdp.h>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream/ArduinoStream.h>
+#include <strings.h>
 
 #include "SDP600.h"
 
@@ -50,9 +53,10 @@ ArduinoInStream cin(Serial, cinBuf, sizeof(cinBuf));
 // Some global variables to enable or disable features based on connected
 // hardware
 bool is_sd_card_available = false;
-bool poll_sensor_now = false;
+bool write_measurements = false;
 bool is_wifi_client = false;
 bool is_measurement_file_free = true;
+bool is_json_finalized = false;
 
 // Some global variables and buffers
 uint64_t start_timestamp;
@@ -69,8 +73,10 @@ IPAddress local_IP(192, 168, 4, 1);
 IPAddress gateway(192, 168, 4, 1);
 IPAddress subnet(255, 255, 255, 0);
 
+// forward declarations
 void initWifi();
 void initWebserver();
+void pollSensorISR();
 
 void reformatMsg() {
   cout << F("Try reformatting the card.  For best results use\n");
@@ -79,7 +85,6 @@ void reformatMsg() {
 }
 
 void hardwareTimerHandler() { ISR_Timer.run(); }
-void pollSensorISR() { poll_sensor_now = true; }
 
 bool initSdCard() {
   cout << "Initializing SD card" << endl;
@@ -240,32 +245,38 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
     }
   }
 
-  if (bytes_in_buffer == 0) {
+  if (bytes_in_buffer == 0 && is_json_finalized) {
     measurements_returned_already = 0;
     ms_returned_already = 0;
     measurement_file.close();
     timestamp_file.close();
     is_measurement_file_free = true;
+    is_json_finalized = false;
     return bytes_in_buffer;
   }
 
-  if (bytes_in_buffer - buffer_size < 35) {
+  if (bytes_in_buffer - buffer_size < 39) {
+    is_json_finalized = false;
     return bytes_in_buffer;
   }
-  memcpy(buffer, "next_start_idx:" , 15);
-  bytes_in_buffer += 15;
+  memcpy(buffer + bytes_in_buffer, "\"next_start_idx\":", 17);
+  bytes_in_buffer += 17;
   // convert next_start_idx into asci
   size_t string_start_idx = sizeof(number_buffer) - 1;
   number_buffer[string_start_idx] = '\0';
   do {
     number_buffer[--string_start_idx] =
         next_start_idx % 10 + '0'; // add '0' = 48 in ascii
-    ms /= 10;
+    next_start_idx /= 10;
   } while (next_start_idx != 0);
   size_t digit_count = sizeof(number_buffer) - 1 - string_start_idx;
   memcpy(buffer + bytes_in_buffer, number_buffer + string_start_idx,
          digit_count);
   bytes_in_buffer += digit_count;
+
+  memcpy(buffer + bytes_in_buffer, "\n}", 2);
+  bytes_in_buffer += 2;
+  is_json_finalized = true;
 
   return bytes_in_buffer;
 }
@@ -345,31 +356,72 @@ void onGetMeasurement(AsyncWebServerRequest *request) {
 
   AsyncWebServerResponse *response = request->beginChunkedResponse(
       "application/json",
-      [max_length = max_length, next_start_idx = next_start_idx](uint8_t *buffer, size_t maxLen,
-                                size_t index) -> size_t {
+      [max_length = max_length, next_start_idx = next_start_idx](
+          uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
         // Write up to "maxLen" bytes into "buffer" and return the amount
         // written. index equals the amount of bytes that have been already
         // sent You will be asked for more data until 0 is returned Keep in
         // mind that you can not delay or yield waiting for more data!
-        return generateMeasurementJson(buffer, maxLen, max_length, next_start_idx);
+        return generateMeasurementJson(buffer, maxLen, max_length,
+                                       next_start_idx);
       });
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
   request->send(response);
 }
 
 void onGetDownloads(AsyncWebServerRequest *request) {
-  // TODO!!!
-  cout << "/downloads were requested" << endl;
   AsyncJsonResponse *response = new AsyncJsonResponse();
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
   JsonObject root = response->getRoot();
   JsonArray file_list = root["files"].to<JsonArray>();
 
-  file_list.add("testfile");
-  file_list.add("anothertestfile");
-  file_list.add("last_test_file");
-
+  FsFile directory;
+  directory.open("/measurements", O_RDONLY);
+  directory.rewind();
+  FsFile file;
+  char file_name[21];
+  while (file.openNext(&directory, O_RDONLY)) {
+    if (!file.isHidden()) {
+      file.getName(file_name, sizeof(file_name));
+      if (strcmp(&file_name[strlen(file_name) - 2], "ms") == 0) {
+        continue;
+      }
+      file_list.add(file_name);
+    }
+    file.close();
+  }
   response->setLength();
+  request->send(response);
+}
+
+void onDownload(AsyncWebServerRequest *request) {
+  if (!request->hasParam("file")) {
+    request->send(500);
+  }
+  String file_name = request->getParam("file")->value();
+
+  AsyncWebServerResponse *response = request->beginChunkedResponse(
+      "audio/wav",
+      [file_name = file_name](uint8_t *buffer, size_t maxLen,
+                              size_t index) -> size_t {
+        FsFile file;
+        if (!file.open(("/measurements/" + file_name).c_str(), O_RDONLY)) {
+          return 0;
+        }
+        // seek to current position
+        file.seek(index);
+        size_t bytes_read = file.read(buffer, maxLen);
+        file.close();
+        return bytes_read;
+      });
+
+  char buf[28 + file_name.length()];
+  memcpy(buf + 0, "attachment; filename=\"", 22);
+  memcpy(buf + 22, file_name.c_str(), file_name.length());
+  memcpy(buf + 22 + file_name.length(), ".raw\"\0", 6);
+  cout << "DEBUG: 2 buf: " << buf << endl;
+
+  response->addHeader("Content-Disposition", buf);
   request->send(response);
 }
 
@@ -465,6 +517,8 @@ void initWebserver() {
   server.on("/measurements", HTTP_GET, onGetMeasurement);
   cout << "serving /downloads" << endl;
   server.on("/downloads", HTTP_GET, onGetDownloads);
+  cout << "serving /download" << endl;
+  server.on("/download", HTTP_GET, onDownload);
   cout << "serving /set_wifi" << endl;
   server.on("/set_wifi", HTTP_POST, onPostWifi);
   server.onNotFound(onNotFound);
@@ -587,7 +641,6 @@ void setup() {
   }
 
   createMeasurementFile();
-
   // Setup Webserver
   initWebserver();
 
@@ -603,7 +656,7 @@ void setup() {
   }
 }
 
-bool openMeasurementFileWriting() {
+bool openMeasurementFilesAppending() {
   if (!timestamp_file.open(timestamp_file_name.c_str(),
                            O_WRONLY | O_APPEND | O_AT_END)) {
     cout << "Failed to open timestamp file: " << timestamp_file_name << endl;
@@ -628,7 +681,8 @@ void write_buffers_to_disk() {
     }
   }
   is_measurement_file_free = false;
-  if (!openMeasurementFileWriting()) {
+  if (!openMeasurementFilesAppending()) {
+    is_measurement_file_free = true;
     return;
   }
   // Write buffers
@@ -647,19 +701,26 @@ void write_buffers_to_disk() {
 }
 
 void store_measurement(const uint64_t &timestamp, float measurement) {
-  timestamps_buffer[buffer_idx] = timestamp;
-  measurements_buffer[buffer_idx] = measurement;
-  ++buffer_idx;
-  write_buffers_to_disk();
+  if (buffer_idx < measurement_buffer_size) {
+    timestamps_buffer[buffer_idx] = timestamp;
+    measurements_buffer[buffer_idx] = measurement;
+    ++buffer_idx;
+  }
+  // If file can not be opened new measurements are dropped
+  // FIXME Maybe drop old measurements?
+}
+
+void pollSensorISR() {
+  uint64_t timestamp = start_timestamp + millis();
+  // float measurement = sensor.read();
+  float measurement = 0.42f;
+  store_measurement(timestamp, measurement);
+  write_measurements = true;
 }
 
 void loop() {
-  if (poll_sensor_now) {
-    uint64_t timestamp = start_timestamp + millis();
-    // TODO read infrasound sensor
-    // float measurement = sensor.read();
-    float measurement = 0.42f;
-    store_measurement(timestamp, measurement);
-    poll_sensor_now = false;
+  if (write_measurements) {
+    write_buffers_to_disk(); // keep this in loop()
+    write_measurements = false;
   }
 }

@@ -78,7 +78,7 @@ sensor_data = None
 def pollSensor(shared_list):
     while True:
         t = time.time()
-        v = get_measurement(t, 0.5)  # This is the frequency
+        v = get_measurement(t, 0.5, amplitude=0.2)  # This is the frequency
         shared_list.append((t, v))
         time.sleep(0.02)
 
