@@ -230,6 +230,7 @@ function load_initail_measurements() {
 
 function setupEventListener() {
   // setup event listener for new measurements
+  console.log("setupEventListener");
   if (!!window.EventSource) {
     console.log("Creating EventSource");
     var source = new EventSource("/measurement_events");
@@ -252,7 +253,7 @@ function setupEventListener() {
       if (times_buffer.length == 0) {
         new_timestamp = start_timestamp;
       } else {
-        new_timestamp = times_buffer[times_buffer.length() - 1] + ms_between_measurements;
+        new_timestamp = times_buffer[times_buffer.length - 1] + ms_between_measurements;
       }
       times_buffer.push(new_timestamp);
       number_of_new_measurements += 1;
