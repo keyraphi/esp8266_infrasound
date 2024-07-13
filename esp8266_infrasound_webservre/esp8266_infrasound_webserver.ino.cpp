@@ -363,7 +363,6 @@ void onDownload(AsyncWebServerRequest *request) {
   memcpy(buf + 0, "attachment; filename=\"", 22);
   memcpy(buf + 22, file_name.c_str(), file_name.length());
   memcpy(buf + 22 + file_name.length(), ".raw\"\0", 6);
-  cout << "DEBUG: 2 buf: " << buf << endl;
 
   response->addHeader("Content-Disposition", buf);
   request->send(response);
@@ -395,16 +394,11 @@ void onStaticFile(AsyncWebServerRequest *request) {
           cout << "Failed to open html_file" << endl;
           return 0;
         }
-        cout << "DEBUG: opened file " << ssd_path << ", which contains "
-             << html_file.fileSize() << " bytes" << endl;
         if (!html_file.seek(index)) {
           cout << "Failed to seek in html_file" << endl;
         }
-        cout << "DEBUG: seeked to position " << index << endl;
         size_t read_bytes = html_file.read(buffer, maxLen);
-        cout << "DEBUG: read " << read_bytes << " bytes" << endl;
         html_file.close();
-        cout << "DEBUG closed file" << endl;
         return read_bytes;
       });
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
@@ -457,6 +451,12 @@ void onConnect(AsyncEventSourceClient *client) {
   }
 }
 
+void onStartTimestamp(AsyncWebServerRequest *request) {
+  AsyncResponseStream *response = request->beginResponseStream("text/plain");
+  response->printf("%llu", start_timestamp);
+  request->send(response);
+}
+
 void initWebserver() {
 
   cout << "Serving static files" << endl;
@@ -478,6 +478,8 @@ void initWebserver() {
   server.on("/download", HTTP_GET, onDownload);
   cout << "serving /set_wifi" << endl;
   server.on("/set_wifi", HTTP_POST, onPostWifi);
+  cout << "serving /start_timestamp" << endl;
+  server.on("/start_timestamp", HTTP_GET, onStartTimestamp);
   server.onNotFound(onNotFound);
 
   cout << "Setting up handler for /measurement_event" << endl;

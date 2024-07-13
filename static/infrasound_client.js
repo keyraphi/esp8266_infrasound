@@ -191,7 +191,17 @@ function load_sensor_data(xmlhttp) {
   if (xmlhttp.readyState == XMLHttpRequest.DONE && xmlhttp.status == 200) {
     var measurements = JSON.parse(xmlhttp.responseText);
     next_start_idx = measurements["next_start_idx"];
-    updateCharts(measurements);
+
+    for (let i = 0; i < measurements["preassure"].length; i++) {
+      if (times_buffer.length == 0) {
+        new_timestamp = start_timestamp;
+      } else {
+        new_timestamp = times_buffer[times_buffer.length - 1] + ms_between_measurements;
+      }
+      times_buffer.push(new_timestamp);
+      measurement_buffer.push(measurements["preassure"][i]);
+    }
+    updateCharts();
   }
 }
 
@@ -257,7 +267,7 @@ function setupEventListener() {
       }
       times_buffer.push(new_timestamp);
       number_of_new_measurements += 1;
-      if (number_of_new_measurements > 20) {
+      if (number_of_new_measurements > 10) {
         updateCharts();
         number_of_new_measurements = 0;
       }
