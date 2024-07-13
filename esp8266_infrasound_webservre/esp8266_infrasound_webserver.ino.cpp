@@ -1,48 +1,44 @@
-
 #include <Arduino.h>
 #include <AsyncJson.h>
-#include <ESP8266TimerInterrupt.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266_ISR_Timer.h>
-#include <ESP8266_ISR_Timer.hpp>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <LittleFS.h>
 #include <NTPClient.h>
 #include <SdFat.h>
+#include <SoftwareSerial.h>
 #include <WiFiUdp.h>
+#include <circular_queue/circular_queue.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream/ArduinoStream.h>
 #include <strings.h>
 
-#include "SDP600.h"
-
 #define SPI_SPEED SD_SCK_MHZ(4)
+#define MYPORT_TX 5
+#define MYPORT_RX 4
+
+EspSoftwareSerial::UART arduino_serial;
 
 String ssid;
 String password;
 AsyncWebServer server(80);
+AsyncEventSource events("/measurement_events");
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 const char *wifi_acces_file_path = "wifi_ssid_pw.txt";
 
-SDP600 sensor;
-
 // Timers
-#define HW_TIMER_INTERVAL_MS 1L
-ESP8266Timer ITimer;                // hardware timer
-ESP8266_ISR_Timer ISR_Timer;        // virtual timers
-uint32_t time_interval_sensor = 20; // poll sensor every 20 ms
+// #define HW_TIMER_INTERVAL_MS 1L
+// ESP8266Timer ITimer;                // hardware timer
+// ESP8266_ISR_Timer ISR_Timer;        // virtual timers
+// uint32_t time_interval_sensor = 20; // poll sensor every 20 ms
 
 // SSD Chip Select pin
 const int sd_chip_select = SS;
 SdFs sd;
-FsFile timestamp_file;
 FsFile measurement_file;
-FsFile html_file;
 
 // Printing and reading from USB with cout and cin
 ArduinoOutStream cout(Serial);
@@ -53,20 +49,15 @@ ArduinoInStream cin(Serial, cinBuf, sizeof(cinBuf));
 // Some global variables to enable or disable features based on connected
 // hardware
 bool is_sd_card_available = false;
-bool write_measurements = false;
 bool is_wifi_client = false;
-bool is_measurement_file_free = true;
 bool is_json_finalized = false;
+uint64_t start_timestamp = 0;
 
 // Some global variables and buffers
-uint64_t start_timestamp;
-const uint32_t measurement_buffer_size = 64;
-float measurements_buffer[measurement_buffer_size];
-uint64_t timestamps_buffer[measurement_buffer_size];
-uint32_t buffer_idx = 0;
-String timestamp_file_name;
+// ring buffer to buffer new measurements
+circular_queue<float> measurements_buffer(32);
+
 String measurement_file_name;
-uint32_t ms_returned_already = 0;
 uint32_t measurements_returned_already = 0;
 
 IPAddress local_IP(192, 168, 4, 1);
@@ -77,6 +68,7 @@ IPAddress subnet(255, 255, 255, 0);
 void initWifi();
 void initWebserver();
 void pollSensorISR();
+bool openMeasurementFileAppending();
 
 void reformatMsg() {
   cout << F("Try reformatting the card.  For best results use\n");
@@ -84,7 +76,7 @@ void reformatMsg() {
   cout << F("and use SDFormatter from www.sdcard.org/downloads.\n");
 }
 
-void hardwareTimerHandler() { ISR_Timer.run(); }
+// void hardwareTimerHandler() { ISR_Timer.run(); }
 
 bool initSdCard() {
   cout << "Initializing SD card" << endl;
@@ -169,60 +161,24 @@ void onNotFound(AsyncWebServerRequest *request) {
 int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
                             uint32_t number_of_measurements,
                             uint32_t next_start_idx) {
+  // If measurement_file are open currently... close them and
+  // remember to open them before leaving this function
+  bool closed_measurement_file = false;
+  if (measurement_file.isOpen()) {
+    measurement_file.close();
+    closed_measurement_file = true;
+  }
+  FsFile value_file;
   size_t bytes_in_buffer = 0;
-  if (ms_returned_already == 0) {
-    memcpy(buffer, "{\n\"ms\":[", 8);
-    bytes_in_buffer += 8;
-  }
+  char number_buffer[21];
 
-  char number_buffer[21]; // uint64_t can have 20 digits
-  // Writing timestamps into buffer
-  if (ms_returned_already < number_of_measurements) {
-    uint64_t ms;
-    while (ms_returned_already < number_of_measurements) {
-      if (timestamp_file.read(&ms, 8) < 8) {
-        // there are no more timestamps in the file
-        cout << "WARNING: File ran out of timestamps" << endl;
-      }
-      // convert ms into asci
-      size_t string_start_idx = sizeof(number_buffer) - 1;
-      number_buffer[string_start_idx] = '\0';
-      do {
-        number_buffer[--string_start_idx] =
-            ms % 10 + '0'; // add '0' = 48 in ascii
-        ms /= 10;
-      } while (ms != 0);
-      size_t digit_count = sizeof(number_buffer) - 1 - string_start_idx;
-      memcpy(buffer + bytes_in_buffer, number_buffer + string_start_idx,
-             digit_count);
-      bytes_in_buffer += digit_count;
-
-      ++ms_returned_already;
-      if (ms_returned_already == number_of_measurements) {
-        buffer[bytes_in_buffer++] = ']';
-        buffer[bytes_in_buffer++] = ',';
-        buffer[bytes_in_buffer++] = '\n';
-      } else {
-        buffer[bytes_in_buffer++] = ',';
-        if (buffer_size - bytes_in_buffer < 23) {
-          // potentially not enough space in buffer for next timestamp
-          return bytes_in_buffer;
-        }
-      }
-    }
-  }
-  // At this point it is guaranteed that the part of the json with the "ms" is
-  // completely written to the buffer
-  if (buffer_size - bytes_in_buffer < 23) {
-    return bytes_in_buffer;
-  }
   if (measurements_returned_already == 0) {
-    memcpy(buffer + bytes_in_buffer, "\"preassure\":[", 13);
-    bytes_in_buffer += 13;
+    memcpy(buffer + bytes_in_buffer, "{\n\"preassure\":[", 15);
+    bytes_in_buffer += 15;
   }
   float preassure;
   while (measurements_returned_already < number_of_measurements) {
-    if (measurement_file.read(&preassure, 4) < 4) {
+    if (value_file.read(&preassure, 4) < 4) {
       // there are no more timestamps in the file
       cout << "WARNING: File ran out of measurements" << endl;
     }
@@ -240,6 +196,9 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
       buffer[bytes_in_buffer++] = ',';
       if (buffer_size - bytes_in_buffer < 23) {
         // potentially not enough space in buffer for next measurement
+        if (closed_measurement_file) {
+          openMeasurementFileAppending();
+        }
         return bytes_in_buffer;
       }
     }
@@ -247,16 +206,19 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
 
   if (bytes_in_buffer == 0 && is_json_finalized) {
     measurements_returned_already = 0;
-    ms_returned_already = 0;
-    measurement_file.close();
-    timestamp_file.close();
-    is_measurement_file_free = true;
+    value_file.close();
     is_json_finalized = false;
+    if (closed_measurement_file) {
+      openMeasurementFileAppending();
+    }
     return bytes_in_buffer;
   }
 
   if (bytes_in_buffer - buffer_size < 39) {
     is_json_finalized = false;
+    if (closed_measurement_file) {
+      openMeasurementFileAppending();
+    }
     return bytes_in_buffer;
   }
   memcpy(buffer + bytes_in_buffer, "\"next_start_idx\":", 17);
@@ -278,6 +240,9 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
   bytes_in_buffer += 2;
   is_json_finalized = true;
 
+  if (closed_measurement_file) {
+    openMeasurementFileAppending();
+  }
   return bytes_in_buffer;
 }
 
@@ -301,30 +266,18 @@ void onGetMeasurement(AsyncWebServerRequest *request) {
     max_length = 5000;
   }
 
-  if (!is_measurement_file_free) {
-    cout << "WARNING: file \'" << measurement_file_name
-         << "\' is not free! Not continuing" << endl;
-    request->send(500);
-    return;
-  }
-  is_measurement_file_free = false;
-  // Open files with timestamps and measurements
-  if (!timestamp_file.open(timestamp_file_name.c_str(), O_RDONLY)) {
-    cout << "Failed to open timestamp file: " << timestamp_file_name << endl;
-    request->send(500);
-    return;
-  }
-  if (!measurement_file.open(measurement_file_name.c_str(), O_RDONLY)) {
+  // Open file with measurements
+  FsFile value_file;
+  if (!value_file.open(measurement_file_name.c_str(), O_RDONLY)) {
     cout << "Failed to open measurement file: " << measurement_file_name
          << endl;
-    timestamp_file.close();
     request->send(500);
     return;
   }
 
   // seek to starting point in files such that mx_length timestamp/measurement
   // pairs are returned
-  uint32_t n_measurements_in_file = (uint32_t)measurement_file.fileSize() / 4;
+  uint32_t n_measurements_in_file = (uint32_t)value_file.fileSize() / 4;
   max_length = min(max_length, n_measurements_in_file);
   uint32_t seek_to_measurement =
       max(start_with_idx, n_measurements_in_file - max_length);
@@ -332,24 +285,12 @@ void onGetMeasurement(AsyncWebServerRequest *request) {
   max_length = n_measurements_in_file - seek_to_measurement;
   uint32_t next_start_idx = start_with_idx + max_length;
   // seek accordingly
-  uint32_t bytes_to_seek_timestamp = seek_to_measurement * 8;
   uint32_t bytes_to_seek_measurement = seek_to_measurement * 4;
 
-  if (!timestamp_file.seek(bytes_to_seek_timestamp)) {
-    cout << "Failed to seek back " << bytes_to_seek_timestamp << " bytes in "
-         << timestamp_file_name << endl;
-    timestamp_file.close();
-    measurement_file.close();
-    is_measurement_file_free = true;
-    request->send(500);
-    return;
-  }
-  if (!measurement_file.seek(bytes_to_seek_measurement)) {
+  if (!value_file.seek(bytes_to_seek_measurement)) {
     cout << "Failed to seek back " << bytes_to_seek_measurement << " bytes in "
          << measurement_file_name << endl;
-    timestamp_file.close();
-    measurement_file.close();
-    is_measurement_file_free = true;
+    value_file.close();
     request->send(500);
     return;
   }
@@ -358,10 +299,6 @@ void onGetMeasurement(AsyncWebServerRequest *request) {
       "application/json",
       [max_length = max_length, next_start_idx = next_start_idx](
           uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-        // Write up to "maxLen" bytes into "buffer" and return the amount
-        // written. index equals the amount of bytes that have been already
-        // sent You will be asked for more data until 0 is returned Keep in
-        // mind that you can not delay or yield waiting for more data!
         return generateMeasurementJson(buffer, maxLen, max_length,
                                        next_start_idx);
       });
@@ -408,7 +345,14 @@ void onDownload(AsyncWebServerRequest *request) {
         if (!file.open(("/measurements/" + file_name).c_str(), O_RDONLY)) {
           return 0;
         }
+
         // seek to current position
+        if (index == 0) {
+          memcpy(buffer, "data", 4);
+          uint32_t file_size = file.fileSize();
+          memcpy(buffer + 4, reinterpret_cast<char *>(&file_size), 4);
+          maxLen -= 8;
+        }
         file.seek(index);
         size_t bytes_read = file.read(buffer, maxLen);
         file.close();
@@ -446,15 +390,21 @@ void onStaticFile(AsyncWebServerRequest *request) {
       contentType.c_str(),
       [ssd_path = ssd_path](uint8_t *buffer, size_t maxLen,
                             size_t index) -> size_t {
+        FsFile html_file;
         if (!html_file.open(ssd_path.c_str(), O_RDONLY)) {
           cout << "Failed to open html_file" << endl;
           return 0;
         }
+        cout << "DEBUG: opened file " << ssd_path << ", which contains "
+             << html_file.fileSize() << " bytes" << endl;
         if (!html_file.seek(index)) {
           cout << "Failed to seek in html_file" << endl;
         }
+        cout << "DEBUG: seeked to position " << index << endl;
         size_t read_bytes = html_file.read(buffer, maxLen);
+        cout << "DEBUG: read " << read_bytes << " bytes" << endl;
         html_file.close();
+        cout << "DEBUG closed file" << endl;
         return read_bytes;
       });
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
@@ -500,6 +450,13 @@ void onPostWifi(AsyncWebServerRequest *request) {
   }
 }
 
+void onConnect(AsyncEventSourceClient *client) {
+  if (client->lastId()) {
+    cout << "Client " << client->lastId() << " has reconnected" << endl;
+  } else {
+  }
+}
+
 void initWebserver() {
 
   cout << "Serving static files" << endl;
@@ -522,6 +479,10 @@ void initWebserver() {
   cout << "serving /set_wifi" << endl;
   server.on("/set_wifi", HTTP_POST, onPostWifi);
   server.onNotFound(onNotFound);
+
+  cout << "Setting up handler for /measurement_event" << endl;
+  events.onConnect(onConnect);
+  server.addHandler(&events);
 
   server.begin();
 }
@@ -583,29 +544,29 @@ void createMeasurementFile() {
     }
   }
   measurement_file_name = "/measurements/" + String(start_timestamp);
-  timestamp_file_name = "/measurements/" + String(start_timestamp) + "_ms";
   uint8_t retries = 0;
   while (sd.exists(measurement_file_name.c_str())) {
     ++retries;
     measurement_file_name =
         "/measurements/" + String(start_timestamp) + "_" + String(retries);
-    timestamp_file_name = measurement_file_name + "_ms";
   }
-  cout << "Creating file " << measurement_file_name << " and "
-       << timestamp_file_name << endl;
+  cout << "Creating file " << measurement_file_name << endl;
   if (!measurement_file.open(measurement_file_name.c_str(),
                              O_WRONLY | O_CREAT | O_TRUNC)) {
     cout << "Failed to create file " << measurement_file_name << endl;
   }
-  if (!timestamp_file.open(timestamp_file_name.c_str(),
-                           O_WRONLY | O_CREAT | O_TRUNC)) {
-    cout << "Failed to create file " << timestamp_file_name << endl;
-  }
   measurement_file.close();
-  timestamp_file.close();
+}
+
+void wait_forever() {
+  cout << "Waiting forever" << endl;
+  while (1) {
+    delay(1000);
+  }
 }
 
 void setup() {
+  // Debug serial connected to USB
   Serial.begin(115200);
   while (!Serial) {
     delay(1);
@@ -618,20 +579,21 @@ void setup() {
   cout << ARDUINO_BOARD << endl;
   cout << "##########################" << endl;
 
-  if (!LittleFS.begin()) {
-    cout << "Could not initialize LittleFS" << endl;
-    return;
+  // Connection to Arduino serial using software serial
+  cout << "Connecting to Arduino board" << endl;
+  arduino_serial.begin(19200, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
+  if (!arduino_serial) {
+    cout << "Invalid EspSoftwareSerial pin configuration, check config!";
+    // don't continue with broken configuration
+    wait_forever();
   }
-  LittleFS.format();
-  // Initialize Sensor
-  cout << "Initializing Sensor" << endl;
-  sensor.begin();
-  sensor.setResolution(14);
-  cout << "Sensor initialized" << endl;
-  cout << "--------------------------" << endl;
+  cout << "Connection to Arduino established" << endl;
 
   // Initialize SD-Card
-  is_sd_card_available = initSdCard();
+  if (!initSdCard()) {
+    cout << "Failed to initialize SD-Card..." << endl;
+    wait_forever();
+  }
 
   // init wifi
   initWifi();
@@ -641,86 +603,101 @@ void setup() {
   }
 
   createMeasurementFile();
+
   // Setup Webserver
   initWebserver();
-
-  // Setup Timers based on enabled features
-  cout << "CPU Frequency = " << F_CPU / 1000000 << endl;
-  cout << " MHz" << endl;
-  // Hardware interval = 1ms set in microsecs
-  if (ITimer.attachInterruptInterval(1 * 1000, hardwareTimerHandler)) {
-    ISR_Timer.setInterval(time_interval_sensor, pollSensorISR);
-  } else {
-    cout << "Can't set ITimer correctly. Select another freq. or interval"
-         << endl;
-  }
 }
 
-bool openMeasurementFilesAppending() {
-  if (!timestamp_file.open(timestamp_file_name.c_str(),
-                           O_WRONLY | O_APPEND | O_AT_END)) {
-    cout << "Failed to open timestamp file: " << timestamp_file_name << endl;
-    return false;
-  }
+bool openMeasurementFileAppending() {
   if (!measurement_file.open(measurement_file_name.c_str(),
                              O_WRONLY | O_APPEND | O_AT_END)) {
     cout << "Failed to open measurement file: " << measurement_file_name
          << endl;
-    timestamp_file.close();
     return false;
   }
   return true;
 }
 
-void write_buffers_to_disk() {
-  while (!is_measurement_file_free) {
-    if (buffer_idx < measurement_buffer_size) {
-      return; // just keep it in the buffer and write it next time
-    } else {
-      yield(); // buffer is full, wait for it to be empty
-    }
-  }
-  is_measurement_file_free = false;
-  if (!openMeasurementFilesAppending()) {
-    is_measurement_file_free = true;
+void sendMeasurementEvent(float measurement) {
+  char number_buffer[21];
+  dtostrf(measurement, -1, 7, number_buffer);
+  events.send(number_buffer, "measurement", millis(), false);
+}
+
+void handleNewMeasurements() {
+  if (!openMeasurementFileAppending()) {
     return;
   }
   // Write buffers
-  for (uint32_t i = 0; i < buffer_idx; ++i) {
-    if (timestamp_file.write((uint8_t *)&timestamps_buffer[i], 8) != 8) {
-      cout << "Writing timestamp failed" << endl;
+  for (uint32_t i = 0; i < measurements_buffer.available(); ++i) {
+    float measurement = measurements_buffer.pop();
+
+    if (measurement_file.write(reinterpret_cast<uint8_t *>(&measurement), 4) !=
+        4) {
+      cout << "Writing measurement to ssd failed" << endl;
     }
-    if (measurement_file.write((uint8_t *)&measurements_buffer[i], 4) != 4) {
-      cout << "Writing measurement failed" << endl;
-    }
+    sendMeasurementEvent(measurement);
   }
-  timestamp_file.close();
   measurement_file.close();
-  buffer_idx = 0;
-  is_measurement_file_free = true;
 }
 
-void store_measurement(const uint64_t &timestamp, float measurement) {
-  if (buffer_idx < measurement_buffer_size) {
-    timestamps_buffer[buffer_idx] = timestamp;
-    measurements_buffer[buffer_idx] = measurement;
-    ++buffer_idx;
+float previous_measurement = -4200;
+size_t good_sync_messages = 0;
+size_t bad_sync_messages = 0;
+
+// Automatically syncing serial connection
+bool getMeasurementFromArduino(float *value) {
+  // Syncing
+  if (arduino_serial.available() >= 4) {
+    if (good_sync_messages < 10) {
+      arduino_serial.read(reinterpret_cast<char *>(value), 4);
+      if (fabs(*value - previous_measurement) < 50.f) { // sync criterion
+        good_sync_messages++;
+        bad_sync_messages = 0;
+      } else {
+        good_sync_messages = 0;
+        bad_sync_messages++;
+      }
+      previous_measurement = *value;
+      if (bad_sync_messages > 2) {
+        while (!arduino_serial.available()) {
+          yield();
+        }
+        // read one byte and see if it is now in sync
+        arduino_serial.read();
+        bad_sync_messages = 0;
+      }
+      cout << "Good sync messages: " << good_sync_messages << ", "
+           << "bad sync messages: " << bad_sync_messages << endl;
+      return false;
+    } else {
+      arduino_serial.read(reinterpret_cast<char *>(value), 4);
+
+      return true;
+    }
   }
-  // If file can not be opened new measurements are dropped
-  // FIXME Maybe drop old measurements?
+  return false;
 }
 
-void pollSensorISR() {
-  uint64_t timestamp = start_timestamp + millis();
-  // float measurement = sensor.read();
-  float measurement = 0.42f;
-  store_measurement(timestamp, measurement);
-  write_measurements = true;
+void checkArdinoForMeasurements() {
+  while (arduino_serial.available() >= 4) {
+    float measurement;
+    if (!getMeasurementFromArduino(&measurement)) {
+      return;
+    }
+    bool push_success = measurements_buffer.push(measurement);
+    if (!push_success) {
+      cout << "WARNING: measurement buffer ran full ... dropping measurements!"
+           << endl;
+    }
+  }
 }
 
 void loop() {
-  if (write_measurements) {
-    write_buffers_to_disk(); // keep this in loop()
-    write_measurements = false;
+  checkArdinoForMeasurements();
+  if (measurements_buffer.available() > 0) {
+    // Let clients know about the new measurements and write everything new to
+    // the file
+    handleNewMeasurements();
   }
 }

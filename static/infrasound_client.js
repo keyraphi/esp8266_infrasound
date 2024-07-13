@@ -1,3 +1,10 @@
+var start_timestamp = 0;
+var ms_between_measurements = 20;
+
+var is_event_listener_running = false;
+var number_of_new_measurements = 0;
+
+
 pfft_module = null;
 pffft().then(async function(Module) {
   if (true) console.log("PFFFT Module initialized");
@@ -121,17 +128,23 @@ function fourier_transform(timeSequence) {
   return fft_result;
 }
 
-function updateCharts(dataJson) {
-  timeArrayMS = dataJson["ms"];
+function onMeasurements(dataJson) {
   preassurePA = dataJson["preassure"];
-  var fft_window = 2 ** document.getElementById("spectrumRange").value;
-
+  var ms = start_timestamp;
+  if (timeArrayMS.length > 0) {
+    ms = timeArrayMS[timeArrayMS.length - 1];
+  }
   for (let i = 0; i < timeArrayMS.length; i++) {
-    var x = timeArrayMS[i];
+    var x = ms;
     var y = preassurePA[i];
     measurement_buffer.push(y);
     times_buffer.push(x);
+    ms += ms_between_measurements;
   }
+  updateCharts();
+}
+
+function updateCharts() {
   // We never show data older than 5 minutes = 15000 samples @ 50 Hz
   measurement_buffer = measurement_buffer.slice(-15000);
   times_buffer = times_buffer.slice(-15000);
@@ -143,6 +156,7 @@ function updateCharts(dataJson) {
   chartTimeSeries.series[0].setData(chart_data, false, false, false);
   chartTimeSeries.update({}, true, false, false);
 
+  var fft_window = 2 ** document.getElementById("spectrumRange").value;
   var fft_time_sequence = Array.from(measurement_buffer.slice(-fft_window));
   if (fft_time_sequence.length < fft_window) {
     // pad up with zeros
@@ -181,16 +195,75 @@ function load_sensor_data(xmlhttp) {
   }
 }
 
-// initially load all available sensor data
-var initial_sensor_data_request = new XMLHttpRequest();
-initial_sensor_data_request.open("GET", `/measurements?start_with_idx=${next_start_idx}&max_length=15000`, false);
-initial_sensor_data_request.send(null);
+// load the start-timestamp
+var start_timestamp_request = new XMLHttpRequest();
 
-if (initial_sensor_data_request.status === 200) {
-  load_sensor_data(initial_sensor_data_request);
+start_timestamp_request.onreadystatechange = function() {
+  if (xmlhttp.readyState == XMLHttpRequest.DONE && xmlhttp.status == 200) {
+    var responseText = xmlhttp.responseText;
+    console.log("Initial timestamp: ", responseText);
+    start_timestamp = parseInt(responseText);
+    console.log("Loading initial measurements...");
+    load_initail_measurements();
+  }
+};
+start_timestamp_request.open(
+  "GET",
+  "/start_timestamp", true);
+start_timestamp_request.send();
+
+
+// initially load all available sensor data
+function load_initail_measurements() {
+  var initial_sensor_data_request = new XMLHttpRequest();
+  initial_sensor_data_request.open("GET", `/measurements?start_with_idx=${next_start_idx}&max_length=15000`, false);
+  initial_sensor_data_request.send(null);
+
+  if (initial_sensor_data_request.status === 200) {
+    load_sensor_data(initial_sensor_data_request);
+    if (!is_event_listener_running) {
+      setupEventListener();
+    }
+  }
 }
 
-// poll new sensor data
+
+function setupEventListener() {
+  // setup event listener for new measurements
+  if (!!window.EventSource) {
+    var source = new EventSource("/measurement_events");
+
+    source.addEventListener("open", function(e) {
+      console.log("Events connected");
+    }, false);
+
+    source.addEventListener("error", function(e) {
+      if (e.target.readyState != EventSource.OPEN) {
+        console.log("Events Disconnected");
+      }
+    }, false);
+
+    source.addEventListener("measurement", function(e) {
+      console.log("meassurement event", e.data);
+      var new_measurement = parseFloat(e.data);
+      measurement_buffer.push(new_measurement);
+      var new_timestamp;
+      if (times_buffer.length == 0) {
+        new_timestamp = start_timestamp;
+      } else {
+        new_timestamp = times_buffer[times_buffer.length() - 1] + ms_between_measurements;
+      }
+      times_buffer.push(new_timestamp);
+      number_of_new_measurements += 1;
+      if (number_of_new_measurements > 20) {
+        updateCharts();
+        number_of_new_measurements = 0;
+      }
+    }, false);
+  }
+}
+
+// TODO REMOVE poll new sensor data
 setInterval(function() {
   var xmlhttp = new XMLHttpRequest();
   xmlhttp.onreadystatechange = function() { load_sensor_data(this) };
