@@ -199,8 +199,8 @@ function load_sensor_data(xmlhttp) {
 var start_timestamp_request = new XMLHttpRequest();
 
 start_timestamp_request.onreadystatechange = function() {
-  if (xmlhttp.readyState == XMLHttpRequest.DONE && xmlhttp.status == 200) {
-    var responseText = xmlhttp.responseText;
+  if (start_timestamp_request.readyState == XMLHttpRequest.DONE && start_timestamp_request.status == 200) {
+    var responseText = start_timestamp_request.responseText;
     console.log("Initial timestamp: ", responseText);
     start_timestamp = parseInt(responseText);
     console.log("Loading initial measurements...");
