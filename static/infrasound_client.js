@@ -231,6 +231,7 @@ function load_initail_measurements() {
 function setupEventListener() {
   // setup event listener for new measurements
   if (!!window.EventSource) {
+    console.log("Creating EventSource");
     var source = new EventSource("/measurement_events");
 
     source.addEventListener("open", function(e) {
