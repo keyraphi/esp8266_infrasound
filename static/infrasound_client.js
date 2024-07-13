@@ -263,14 +263,6 @@ function setupEventListener() {
   }
 }
 
-// TODO REMOVE poll new sensor data
-setInterval(function() {
-  var xmlhttp = new XMLHttpRequest();
-  xmlhttp.onreadystatechange = function() { load_sensor_data(this) };
-  xmlhttp.open("GET", `/measurements?start_with_idx=${next_start_idx}&max_length=15000`, true);
-  xmlhttp.send();
-}, 1000); // load new data every second
-
 
 // Time Series range
 document.getElementById("timeSeriesRange").value = chartTimeSeriesDuration;
