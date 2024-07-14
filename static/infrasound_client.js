@@ -228,13 +228,20 @@ function load_initail_measurements() {
   var initial_sensor_data_request = new XMLHttpRequest();
   initial_sensor_data_request.onreadystatechange = function() {
     if (initial_sensor_data_request.readyState == XMLHttpRequest.DONE && initial_sensor_data_request.status == 200) {
+      console.log("initial measurements were loaded")
       load_sensor_data(initial_sensor_data_request);
 
       if (!is_event_listener_running) {
+        console.log("Setting up event listener")
         setupEventListener();
       }
     }
   }
+  initial_sensor_data_request.open(
+    "GET",
+    "/measurements?&start_with_idx=0&max_length=15000"
+  );
+  initial_sensor_data_request.send();
 }
 
 
@@ -273,6 +280,7 @@ function setupEventListener() {
       }
     }, false);
   }
+  is_event_listener_running = true;
 }
 
 
