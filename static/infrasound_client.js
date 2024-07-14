@@ -128,22 +128,6 @@ function fourier_transform(timeSequence) {
   return fft_result;
 }
 
-function onMeasurements(dataJson) {
-  preassurePA = dataJson["preassure"];
-  var ms = start_timestamp;
-  if (timeArrayMS.length > 0) {
-    ms = timeArrayMS[timeArrayMS.length - 1];
-  }
-  for (let i = 0; i < timeArrayMS.length; i++) {
-    var x = ms;
-    var y = preassurePA[i];
-    measurement_buffer.push(y);
-    times_buffer.push(x);
-    ms += ms_between_measurements;
-  }
-  updateCharts();
-}
-
 function updateCharts() {
   // We never show data older than 5 minutes = 15000 samples @ 50 Hz
   measurement_buffer = measurement_buffer.slice(-15000);
@@ -186,11 +170,17 @@ function updateCharts() {
   chartSpectrum.update({}, true, false, false);
 }
 
-var next_start_idx = 0;
-function load_sensor_data(xmlhttp) {
+function load_initial_sensor_data(xmlhttp) {
   if (xmlhttp.readyState == XMLHttpRequest.DONE && xmlhttp.status == 200) {
+
     var measurements = JSON.parse(xmlhttp.responseText);
-    next_start_idx = measurements["next_start_idx"];
+    var next_start_idx = measurements["next_start_idx"];
+
+    // If the sensor ran a while the start time stamp will be further back than
+    // the maximum number of measurements we load from the sensor, thus it will be off.
+    // However thenext start_idx tells us how many measurements have been reccorded in total, so we can use it to compute
+    // the start time of the sequence that was loaded
+    start_timestamp = start_timestamp + (next_start_idx - 1) * ms_between_measurements - measurements["preassure"].length * ms_between_measurements;
 
     for (let i = 0; i < measurements["preassure"].length; i++) {
       if (times_buffer.length == 0) {
@@ -229,7 +219,7 @@ function load_initail_measurements() {
   initial_sensor_data_request.onreadystatechange = function() {
     if (initial_sensor_data_request.readyState == XMLHttpRequest.DONE && initial_sensor_data_request.status == 200) {
       console.log("initial measurements were loaded")
-      load_sensor_data(initial_sensor_data_request);
+      load_initial_sensor_data(initial_sensor_data_request);
 
       if (!is_event_listener_running) {
         console.log("Setting up event listener")
