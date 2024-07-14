@@ -29,12 +29,6 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 const char *wifi_acces_file_path = "wifi_ssid_pw.txt";
 
-// Timers
-// #define HW_TIMER_INTERVAL_MS 1L
-// ESP8266Timer ITimer;                // hardware timer
-// ESP8266_ISR_Timer ISR_Timer;        // virtual timers
-// uint32_t time_interval_sensor = 20; // poll sensor every 20 ms
-
 // SSD Chip Select pin
 const int sd_chip_select = SS;
 SdFs sd;
@@ -169,6 +163,10 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
     closed_measurement_file = true;
   }
   FsFile value_file;
+  if (!value_file.open(measurement_file_name.c_str(), O_RDONLY)) {
+    cout << "Failed to open measurement file " << measurement_file_name << endl;
+    return 0;
+  }
   size_t bytes_in_buffer = 0;
   char number_buffer[21];
 
@@ -181,6 +179,8 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
     if (value_file.read(&preassure, 4) < 4) {
       // there are no more timestamps in the file
       cout << "WARNING: File ran out of measurements" << endl;
+      value_file.close();
+      return bytes_in_buffer;
     }
     // convert preassure into asci - left aligned string
     dtostrf(preassure, -1, 7, number_buffer);
@@ -196,6 +196,7 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
       buffer[bytes_in_buffer++] = ',';
       if (buffer_size - bytes_in_buffer < 23) {
         // potentially not enough space in buffer for next measurement
+        value_file.close();
         if (closed_measurement_file) {
           openMeasurementFileAppending();
         }
@@ -216,11 +217,13 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
 
   if (bytes_in_buffer - buffer_size < 39) {
     is_json_finalized = false;
+    value_file.close();
     if (closed_measurement_file) {
       openMeasurementFileAppending();
     }
     return bytes_in_buffer;
   }
+  value_file.close();
   memcpy(buffer + bytes_in_buffer, "\"next_start_idx\":", 17);
   bytes_in_buffer += 17;
   // convert next_start_idx into asci

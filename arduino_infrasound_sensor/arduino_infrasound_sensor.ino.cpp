@@ -1,5 +1,5 @@
 #define USE_TIMER_1 true
-#define TIMER_FREQUENCY_HZ 20
+#define TIMER_FREQUENCY_HZ 50
 
 #include <Arduino.h>
 #include <TimerInterrupt.h>

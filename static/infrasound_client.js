@@ -226,13 +226,13 @@ start_timestamp_request.send();
 // initially load all available sensor data
 function load_initail_measurements() {
   var initial_sensor_data_request = new XMLHttpRequest();
-  initial_sensor_data_request.open("GET", `/measurements?start_with_idx=${next_start_idx}&max_length=15000`, false);
-  initial_sensor_data_request.send(null);
+  initial_sensor_data_request.onreadystatechange = function() {
+    if (initial_sensor_data_request.readyState == XMLHttpRequest.DONE && initial_sensor_data_request.status == 200) {
+      load_sensor_data(initial_sensor_data_request);
 
-  if (initial_sensor_data_request.status === 200) {
-    load_sensor_data(initial_sensor_data_request);
-    if (!is_event_listener_running) {
-      setupEventListener();
+      if (!is_event_listener_running) {
+        setupEventListener();
+      }
     }
   }
 }
