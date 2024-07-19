@@ -25,7 +25,7 @@ void TimerHandler()
 }
 
 void setup() {
-  Serial.begin(38400);
+  Serial.begin(19200);
   while(!Serial) {
     yield();
   }
@@ -40,12 +40,10 @@ void setup() {
   if (!ITimer1.attachInterrupt(TIMER_FREQUENCY_HZ * 2, TimerHandler)) {
     Serial.println("Starting Timer failed!");
   }
-  pinMode(LED_BUILTIN, OUTPUT);
 }
 
 void loop() {
   if (poll_sensor) {
-    digitalWrite(LED_BUILTIN, HIGH);
     // load new measurement from sensor
     float measurement = sensor.read();
     poll_sensor = false;
@@ -54,7 +52,7 @@ void loop() {
     //esp_serial.write(reinterpret_cast<char*>(&measurement), 4);
     Serial.write(reinterpret_cast<char*>(&measurement), sizeof(measurement));
 
-    digitalWrite(LED_BUILTIN, LOW);
+
   }
   
 }

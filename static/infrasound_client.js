@@ -183,6 +183,7 @@ function load_initial_sensor_data(xmlhttp) {
     start_timestamp = start_timestamp + (next_start_idx - 1) * ms_between_measurements - measurements["preassure"].length * ms_between_measurements;
 
     for (let i = 0; i < measurements["preassure"].length; i++) {
+      var new_timestamp;
       if (times_buffer.length == 0) {
         new_timestamp = start_timestamp;
       } else {
@@ -205,6 +206,7 @@ start_timestamp_request.onreadystatechange = function() {
     start_timestamp = parseInt(responseText);
     console.log("Loading initial measurements...");
     load_initail_measurements();
+    setupEventListener();
   }
 };
 start_timestamp_request.open(
@@ -220,11 +222,6 @@ function load_initail_measurements() {
     if (initial_sensor_data_request.readyState == XMLHttpRequest.DONE && initial_sensor_data_request.status == 200) {
       console.log("initial measurements were loaded")
       load_initial_sensor_data(initial_sensor_data_request);
-
-      if (!is_event_listener_running) {
-        console.log("Setting up event listener")
-        setupEventListener();
-      }
     }
   }
   initial_sensor_data_request.open(

@@ -1,3 +1,4 @@
+#include "c_types.h"
 #include <Arduino.h>
 #include <AsyncJson.h>
 #include <ESP8266WiFi.h>
@@ -154,7 +155,8 @@ void onNotFound(AsyncWebServerRequest *request) {
 // buffer_size must be at least 30 bytes large
 int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
                             uint32_t number_of_measurements,
-                            uint32_t next_start_idx) {
+                            uint32_t next_start_idx,
+                            uint32_t bytes_to_seek_measurement) {
   // If measurement_file are open currently... close them and
   // remember to open them before leaving this function
   bool closed_measurement_file = false;
@@ -167,6 +169,20 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
     cout << "Failed to open measurement file " << measurement_file_name << endl;
     return 0;
   }
+  // Seek to the next measurements
+
+  if (!value_file.seek(bytes_to_seek_measurement +
+                       measurements_returned_already * 4)) {
+    cout << "Failed to seek "
+         << bytes_to_seek_measurement + measurements_returned_already * 4
+         << " bytes in " << measurement_file_name << endl;
+    if (closed_measurement_file) {
+      openMeasurementFileAppending();
+    }
+    value_file.close();
+    return 0;
+  }
+
   size_t bytes_in_buffer = 0;
   char number_buffer[21];
 
@@ -269,7 +285,7 @@ void onGetMeasurement(AsyncWebServerRequest *request) {
     max_length = 5000;
   }
 
-  // Open file with measurements
+  // Find out where to seek for the first measurement
   FsFile value_file;
   if (!value_file.open(measurement_file_name.c_str(), O_RDONLY)) {
     cout << "Failed to open measurement file: " << measurement_file_name
@@ -277,7 +293,6 @@ void onGetMeasurement(AsyncWebServerRequest *request) {
     request->send(500);
     return;
   }
-
   // seek to starting point in files such that mx_length timestamp/measurement
   // pairs are returned
   uint32_t n_measurements_in_file = (uint32_t)value_file.fileSize() / 4;
@@ -289,21 +304,17 @@ void onGetMeasurement(AsyncWebServerRequest *request) {
   uint32_t next_start_idx = start_with_idx + max_length;
   // seek accordingly
   uint32_t bytes_to_seek_measurement = seek_to_measurement * 4;
+  value_file.close();
 
-  if (!value_file.seek(bytes_to_seek_measurement)) {
-    cout << "Failed to seek back " << bytes_to_seek_measurement << " bytes in "
-         << measurement_file_name << endl;
-    value_file.close();
-    request->send(500);
-    return;
-  }
-
+  // Respond in chunks to not block the esp completely
   AsyncWebServerResponse *response = request->beginChunkedResponse(
       "application/json",
-      [max_length = max_length, next_start_idx = next_start_idx](
+      [max_length = max_length, next_start_idx = next_start_idx,
+       bytes_to_seek_measurement = bytes_to_seek_measurement](
           uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
         return generateMeasurementJson(buffer, maxLen, max_length,
-                                       next_start_idx);
+                                       next_start_idx,
+                                       bytes_to_seek_measurement);
       });
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
   request->send(response);
@@ -586,7 +597,7 @@ void setup() {
 
   // Connection to Arduino serial using software serial
   cout << "Connecting to Arduino board" << endl;
-  arduino_serial.begin(19200, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
+  arduino_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
   if (!arduino_serial) {
     cout << "Invalid EspSoftwareSerial pin configuration, check config!";
     // don't continue with broken configuration
@@ -595,9 +606,10 @@ void setup() {
   cout << "Connection to Arduino established" << endl;
 
   // Initialize SD-Card
-  if (!initSdCard()) {
+  while (!initSdCard()) {
     cout << "Failed to initialize SD-Card..." << endl;
-    wait_forever();
+    delay(1000);
+    cout << "Trying again" << endl;
   }
 
   // init wifi
@@ -652,6 +664,7 @@ size_t bad_sync_messages = 0;
 
 // Automatically syncing serial connection
 bool getMeasurementFromArduino(float *value) {
+  uint32_t t0 = millis();
   // Syncing
   if (arduino_serial.available() >= 4) {
     if (good_sync_messages < 10) {
@@ -677,7 +690,6 @@ bool getMeasurementFromArduino(float *value) {
       return false;
     } else {
       arduino_serial.read(reinterpret_cast<char *>(value), 4);
-
       return true;
     }
   }
@@ -686,6 +698,7 @@ bool getMeasurementFromArduino(float *value) {
 
 void checkArdinoForMeasurements() {
   while (arduino_serial.available() >= 4) {
+    uint32_t receive_ts = millis();
     float measurement;
     if (!getMeasurementFromArduino(&measurement)) {
       return;
@@ -704,5 +717,6 @@ void loop() {
     // Let clients know about the new measurements and write everything new to
     // the file
     handleNewMeasurements();
+
   }
 }
