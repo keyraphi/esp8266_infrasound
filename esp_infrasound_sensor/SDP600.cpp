@@ -19,9 +19,10 @@ float SDP600::read(void){
     Wire.endTransmission();
     if(_crc!=crc) return NAN;
     else {
-    	int16_t val=(msb<<8)|lsb;
+    	int val=(msb<<8)|lsb;
     	return 1.0/_scaleFactor*val;
     }
+
 }
 
 void SDP600::reset(void){
@@ -56,3 +57,4 @@ void SDP600::calcCRC(uint8_t value, uint8_t *crc)
       *crc = (*crc << 1);
   }
 }
+

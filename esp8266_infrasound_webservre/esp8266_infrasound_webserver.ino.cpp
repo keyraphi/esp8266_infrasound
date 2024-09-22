@@ -19,7 +19,7 @@
 #define MYPORT_TX 5
 #define MYPORT_RX 4
 
-EspSoftwareSerial::UART arduino_serial;
+EspSoftwareSerial::UART esp_serial;
 
 String ssid;
 String password;
@@ -597,8 +597,8 @@ void setup() {
 
   // Connection to Arduino serial using software serial
   cout << "Connecting to Arduino board" << endl;
-  arduino_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
-  if (!arduino_serial) {
+  esp_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
+  if (!esp_serial) {
     cout << "Invalid EspSoftwareSerial pin configuration, check config!";
     // don't continue with broken configuration
     wait_forever();
@@ -666,9 +666,9 @@ size_t bad_sync_messages = 0;
 bool getMeasurementFromArduino(float *value) {
   uint32_t t0 = millis();
   // Syncing
-  if (arduino_serial.available() >= 4) {
+  if (esp_serial.available() >= 4) {
     if (good_sync_messages < 10) {
-      arduino_serial.read(reinterpret_cast<char *>(value), 4);
+      esp_serial.read(reinterpret_cast<char *>(value), 4);
       if (fabs(*value - previous_measurement) < 50.f) { // sync criterion
         good_sync_messages++;
         bad_sync_messages = 0;
@@ -678,18 +678,18 @@ bool getMeasurementFromArduino(float *value) {
       }
       previous_measurement = *value;
       if (bad_sync_messages > 2) {
-        while (!arduino_serial.available()) {
+        while (!esp_serial.available()) {
           yield();
         }
         // read one byte and see if it is now in sync
-        arduino_serial.read();
+        esp_serial.read();
         bad_sync_messages = 0;
       }
       cout << "Good sync messages: " << good_sync_messages << ", "
            << "bad sync messages: " << bad_sync_messages << endl;
       return false;
     } else {
-      arduino_serial.read(reinterpret_cast<char *>(value), 4);
+      esp_serial.read(reinterpret_cast<char *>(value), 4);
       return true;
     }
   }
@@ -697,7 +697,7 @@ bool getMeasurementFromArduino(float *value) {
 }
 
 void checkArdinoForMeasurements() {
-  while (arduino_serial.available() >= 4) {
+  while (esp_serial.available() >= 4) {
     uint32_t receive_ts = millis();
     float measurement;
     if (!getMeasurementFromArduino(&measurement)) {

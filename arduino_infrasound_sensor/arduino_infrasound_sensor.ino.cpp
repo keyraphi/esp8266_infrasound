@@ -1,20 +1,20 @@
+#include <ESP8266TimerInterrupt.h>
+#include <ESP8266_ISR_Timer.h>
+#include <ESP8266_ISR_Timer.hpp>
+
 #define USE_TIMER_1 true
 #define TIMER_FREQUENCY_HZ 50
-
 #include <Arduino.h>
-#include <TimerInterrupt.h>
-#include <TimerInterrupt.hpp>
-#include <ISR_Timer.h>
-#include <ISR_Timer.hpp>
 
 #include <SoftwareSerial.h>
-
 #include "SDP600.h"
 
-#define MYPORT_TX 3
-#define MYPORT_RX 2
+#define MYPORT_TX 14  // d5
+#define MYPORT_RX 12  // d6
 
-//SoftwareSerial esp_serial(MYPORT_TX, MYPORT_RX);
+EspSoftwareSerial::UART esp_serial;
+
+ESP8266Timer ITimer;
 
 SDP600 sensor;
 
@@ -25,19 +25,17 @@ void TimerHandler()
 }
 
 void setup() {
-  Serial.begin(19200);
+  Serial.begin(115200);
   while(!Serial) {
     yield();
   }
   delay(100);
 
-//  esp_serial.begin(38400, SWSERIAL_8N1);
-
+  esp_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
   sensor.begin();
 
   // Start timer
-  ITimer1.init();
-  if (!ITimer1.attachInterrupt(TIMER_FREQUENCY_HZ * 2, TimerHandler)) {
+  if (!ITimer.attachInterrupt(TIMER_FREQUENCY_HZ, TimerHandler)) {
     Serial.println("Starting Timer failed!");
   }
 }
@@ -49,10 +47,10 @@ void loop() {
     poll_sensor = false;
 
     // send 4 bytes of measurement via serial connection
-    //esp_serial.write(reinterpret_cast<char*>(&measurement), 4);
-    Serial.write(reinterpret_cast<char*>(&measurement), sizeof(measurement));
-
-
+    esp_serial.write(reinterpret_cast<char*>(&measurement), 4);
+    // Serial.write(reinterpret_cast<char*>(&measurement), sizeof(measurement));
+    Serial.print(measurement,4);
+    Serial.println("");
   }
   
 }
