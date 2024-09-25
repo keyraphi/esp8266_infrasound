@@ -285,6 +285,10 @@ function setupEventListener() {
 
     source.addEventListener("measurement", function(e) {
       console.log("meassurement event", e.data);
+      var index_string = e.data.substring(0,10);
+      var measurement_string = e.data.substring(10, 21);
+      // TODO continue here
+      
       var new_measurement = parseFloat(e.data);
       measurement_buffer.push(new_measurement);
       var new_timestamp;
