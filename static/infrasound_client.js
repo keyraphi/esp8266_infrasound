@@ -128,6 +128,38 @@ function fourier_transform(timeSequence) {
   return fft_result;
 }
 
+function addSpinners() {
+  // Spinner for time series
+  var time_spinner = document.createElement("div");
+  var time_spinner_hidden = document.createElement("span");
+  time_spinner.classList.add("spinner-border");
+  time_spinner.classList.add("text-primary");
+  time_spinner_hidden.classList.add("visually-hidden");
+  time_spinner_hidden.innerText = "Loading...";
+  time_spinner.appendChild(time_spinner_hidden);
+  // Spinner for time spectrum
+  var spectrum_spinner = document.createElement("div");
+  var spectrum_spinner_hidden = document.createElement("span");
+  spectrum_spinner.classList.add("spinner-border");
+  spectrum_spinner.classList.add("text-primary");
+  spectrum_spinner_hidden.classList.add("visually-hidden");
+  spectrum_spinner_hidden.innerText = "Loading...";
+  spectrum_spinner.appendChild(spectrum_spinner_hidden);
+
+  // add to page
+  var time_container = document.getElementById("infrasound-time-serie");
+  time_container.appendChild(time_spinner);
+  var spectrum_container = document.getElementById("infrasound-spectrum");
+  spectrum_container.appendChild(spectrum_spinner);
+}
+
+function removeSpinners() {
+  var spinner_elements = document.getElementsByClassName("spinner-border");
+  while (spinner_elements.length > 0) {
+    spinner_elements[0].remove();
+  }
+}
+
 function updateCharts() {
   // We never show data older than 5 minutes = 15000 samples @ 50 Hz
   measurement_buffer = measurement_buffer.slice(-15000);
@@ -192,7 +224,9 @@ function load_initial_sensor_data(xmlhttp) {
       times_buffer.push(new_timestamp);
       measurement_buffer.push(measurements["preassure"][i]);
     }
+    removeSpinners();
     updateCharts();
+    setupEventListener();
   }
 }
 
@@ -206,7 +240,6 @@ start_timestamp_request.onreadystatechange = function() {
     start_timestamp = parseInt(responseText);
     console.log("Loading initial measurements...");
     load_initail_measurements();
-    setupEventListener();
   }
 };
 start_timestamp_request.open(
@@ -229,6 +262,7 @@ function load_initail_measurements() {
     "/measurements?&start_with_idx=0&max_length=15000"
   );
   initial_sensor_data_request.send();
+  addSpinners();
 }
 
 
@@ -305,3 +339,5 @@ function handleSpectrumLogSwitch(checkbox) {
     chartSpectrum.series[0].hide();
   }
 }
+
+addSpinners();
