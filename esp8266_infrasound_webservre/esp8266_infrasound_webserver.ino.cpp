@@ -51,6 +51,8 @@ uint64_t start_timestamp = 0;
 // Some global variables and buffers
 // ring buffer to buffer new measurements
 circular_queue<float> measurements_buffer(32);
+// ring buffer to buffer indices for those measurements
+circular_queue<uint32_t> indices_buffer(32);
 
 String measurement_file_name;
 uint32_t measurements_returned_already = 0;
@@ -169,8 +171,8 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
     cout << "Failed to open measurement file " << measurement_file_name << endl;
     return 0;
   }
+  
   // Seek to the next measurements
-
   if (!value_file.seek(bytes_to_seek_measurement +
                        measurements_returned_already * 4)) {
     cout << "Failed to seek "
@@ -462,6 +464,7 @@ void onConnect(AsyncEventSourceClient *client) {
   if (client->lastId()) {
     cout << "Client " << client->lastId() << " has reconnected" << endl;
   } else {
+    cout << "A client has connected to the measurement event" << endl;
   }
 }
 
@@ -635,10 +638,11 @@ bool openMeasurementFileAppending() {
   return true;
 }
 
-void sendMeasurementEvent(float measurement) {
-  char number_buffer[21];
-  dtostrf(measurement, -1, 7, number_buffer);
-  events.send(number_buffer, "measurement", millis(), false);
+void sendMeasurementEvent(uint32_t measurement_idx, float measurement) {
+  char message_buffer[31];  // 10 bytes for uint32_t, 21 bytes for float measurement
+  uitoa(message_buffer, &(measurement_idx[0]));
+  dtostrf(measurement, -1, 7, &(measurement_buffer[10]));
+  events.send(message_buffer, "measurement", millis(), false);
 }
 
 void handleNewMeasurements() {
@@ -648,12 +652,15 @@ void handleNewMeasurements() {
   // Write buffers
   for (uint32_t i = 0; i < measurements_buffer.available(); ++i) {
     float measurement = measurements_buffer.pop();
+    uint32_t measurement_idx = indices_buffer.pop();  // NOTE: we assume that this buffer always has the same size!
 
+    // Write measurement to file
     if (measurement_file.write(reinterpret_cast<uint8_t *>(&measurement), 4) !=
         4) {
       cout << "Writing measurement to ssd failed" << endl;
     }
-    sendMeasurementEvent(measurement);
+    // Send measurement via websocket
+    sendMeasurementEvent(measurement_idx, measurement);
   }
   measurement_file.close();
 }
@@ -663,47 +670,37 @@ size_t good_sync_messages = 0;
 size_t bad_sync_messages = 0;
 
 // Automatically syncing serial connection
-bool getMeasurementFromArduino(float *value) {
-  uint32_t t0 = millis();
+bool getMeasurementFromArduino(uint32_t *measurement_idx, float *value) {
   // Syncing
-  if (esp_serial.available() >= 4) {
-    if (good_sync_messages < 10) {
-      esp_serial.read(reinterpret_cast<char *>(value), 4);
-      if (fabs(*value - previous_measurement) < 50.f) { // sync criterion
-        good_sync_messages++;
-        bad_sync_messages = 0;
-      } else {
-        good_sync_messages = 0;
-        bad_sync_messages++;
-      }
-      previous_measurement = *value;
-      if (bad_sync_messages > 2) {
-        while (!esp_serial.available()) {
-          yield();
-        }
-        // read one byte and see if it is now in sync
-        esp_serial.read();
-        bad_sync_messages = 0;
-      }
-      cout << "Good sync messages: " << good_sync_messages << ", "
-           << "bad sync messages: " << bad_sync_messages << endl;
-      return false;
-    } else {
-      esp_serial.read(reinterpret_cast<char *>(value), 4);
-      return true;
+  if (esp_serial.available() >= 10) {
+    // skip all bytes untill a full one byte is read, which signalizes the start of a package
+    bool is_package_start_synchronized = false;
+    while (!is_package_start_synchronized && esp_serial.available() > 1) {
+      char package_start;
+      esp_serial.read(&package_start, 1);
+      is_package_start_synchronized = package_start == 0xff;
     }
-  }
-  return false;
+    if (!is_package_start_synchronized) {
+      cout << "No valid datapackage received so far ...\n" << endl;
+      return false;
+    }
+    // read the index of the measurement
+    esp_serial.read(reinterpret_cast<char*>(measurement_idx), 4);
+    // read the value of the measurment
+    esp_serial.read(reinterpret_cast<char*>(value), 4);
+
+    return true;
 }
 
 void checkArdinoForMeasurements() {
   while (esp_serial.available() >= 4) {
-    uint32_t receive_ts = millis();
+    uint32_t measurement_idx;
     float measurement;
-    if (!getMeasurementFromArduino(&measurement)) {
+    if (!getMeasurementFromArduino(&measurement_idx, &measurement)) {
       return;
     }
     bool push_success = measurements_buffer.push(measurement);
+    bool push_success = indices_buffer.push(measurement_idx);
     if (!push_success) {
       cout << "WARNING: measurement buffer ran full ... dropping measurements!"
            << endl;

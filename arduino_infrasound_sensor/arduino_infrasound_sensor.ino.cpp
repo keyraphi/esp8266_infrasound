@@ -17,6 +17,7 @@ EspSoftwareSerial::UART esp_serial;
 ESP8266Timer ITimer;
 
 SDP600 sensor;
+uint32_t measurement_counter;
 
 bool volatile poll_sensor;
 void TimerHandler()
@@ -34,6 +35,8 @@ void setup() {
   esp_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
   sensor.begin();
 
+  measurement_counter = 0;
+
   // Start timer
   if (!ITimer.attachInterrupt(TIMER_FREQUENCY_HZ, TimerHandler)) {
     Serial.println("Starting Timer failed!");
@@ -46,11 +49,24 @@ void loop() {
     float measurement = sensor.read();
     poll_sensor = false;
 
+    // create data package to send to web server esp
+    char data_package[10];
+    data_package[0] = 0xff;  // package starts with a full one byte
+    data_package[9] = 0x00;  // package ends with a zero byte
+    float* measurement_ptr = reinterpret_cast<float*>(&data_package[1]);
+    uint32_t* index_ptr = reinterpret_cast<float*>(&data_package[5]);
+    *measurement_ptr = measurement;
+    *index_ptr = measurement_counter;
+
     // send 4 bytes of measurement via serial connection
-    esp_serial.write(reinterpret_cast<char*>(&measurement), 4);
+    esp_serial.write(reinterpret_cast<char*>(&data_package), 10);
     // Serial.write(reinterpret_cast<char*>(&measurement), sizeof(measurement));
+    Serial.print(measurement_counter,4);
+    Serial.print(" ");
     Serial.print(measurement,4);
     Serial.println("");
+    // increase measurement counter
+    measurement_counter++;
   }
   
 }
