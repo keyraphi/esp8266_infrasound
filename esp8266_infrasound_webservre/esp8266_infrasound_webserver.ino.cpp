@@ -1,4 +1,3 @@
-#include "c_types.h"
 #include <Arduino.h>
 #include <AsyncJson.h>
 #include <ESP8266WiFi.h>
@@ -53,6 +52,10 @@ uint64_t start_timestamp = 0;
 circular_queue<float> measurements_buffer(32);
 // ring buffer to buffer indices for those measurements
 circular_queue<uint32_t> indices_buffer(32);
+// measurement file buffer
+const int measurement_file_buffer_size = 256;
+float measurement_file_buffer[measurement_file_buffer_size];
+uint32_t measurements_in_file_buffer = 0;
 
 String measurement_file_name;
 uint32_t measurements_returned_already = 0;
@@ -171,7 +174,7 @@ int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
     cout << "Failed to open measurement file " << measurement_file_name << endl;
     return 0;
   }
-  
+
   // Seek to the next measurements
   if (!value_file.seek(bytes_to_seek_measurement +
                        measurements_returned_already * 4)) {
@@ -547,6 +550,32 @@ void initTimestamp() {
   cout << "Starttimestamp is " << start_timestamp << " ms" << endl;
 }
 
+String millisecondsToTimeString(uint64_t milliseconds) {
+  // Convert milliseconds to seconds
+  uint64_t seconds = milliseconds / 1000;
+
+  // Get time components
+  uint16_t year, month, day, hour, minute, second, millisecond;
+  time_t time_t_seconds = seconds;
+  struct tm *timeinfo = localtime(&time_t_seconds);
+
+  year = timeinfo->tm_year + 1900;
+  month = timeinfo->tm_mon + 1;
+  day = timeinfo->tm_mday;
+  hour = timeinfo->tm_hour;
+  minute = timeinfo->tm_min;
+  second = timeinfo->tm_sec;
+
+  millisecond = milliseconds % 1000;
+
+  // Format the string
+  char buffer[32];
+  sprintf(buffer, "%04d_%02d_%02d - %02d-%02d-%02d_%03d", year, month, day,
+          hour, minute, second, millisecond);
+
+  return String(buffer);
+}
+
 void createMeasurementFile() {
   if (!is_sd_card_available) {
     cout << "Error: Couldn't write measurements to disk - SD card not "
@@ -562,7 +591,8 @@ void createMeasurementFile() {
       return;
     }
   }
-  measurement_file_name = "/measurements/" + String(start_timestamp);
+  measurement_file_name =
+      "/measurements/" + millisecondsToTimeString(start_timestamp);
   uint8_t retries = 0;
   while (sd.exists(measurement_file_name.c_str())) {
     ++retries;
@@ -599,14 +629,14 @@ void setup() {
   cout << "##########################" << endl;
 
   // Connection to Arduino serial using software serial
-  cout << "Connecting to Arduino board" << endl;
+  cout << "Connecting to Sensor Board" << endl;
   esp_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
   if (!esp_serial) {
     cout << "Invalid EspSoftwareSerial pin configuration, check config!";
     // don't continue with broken configuration
     wait_forever();
   }
-  cout << "Connection to Arduino established" << endl;
+  cout << "Connection to Sensor Board established" << endl;
 
   // Initialize SD-Card
   while (!initSdCard()) {
@@ -639,30 +669,49 @@ bool openMeasurementFileAppending() {
 }
 
 void sendMeasurementEvent(uint32_t measurement_idx, float measurement) {
-  char message_buffer[31];  // 10 bytes for uint32_t, 21 bytes for float measurement
-  uitoa(message_buffer, &(measurement_idx[0]));
-  dtostrf(measurement, -1, 7, &(measurement_buffer[10]));
-  events.send(message_buffer, "measurement", millis(), false);
+  char idx_string[11];         // 10 bytes for uint32_t
+  char measurement_string[21]; // 21 bytes for float
+  char semicolon_str[2];
+  strcpy(semicolon_str, ";");
+  utoa(measurement_idx, idx_string, 10);
+  dtostrf(measurement, -1, 7, measurement_string);
+  char message[32];
+  strcpy(message, idx_string);
+  strcat(message, semicolon_str);
+  strcat(message, measurement_string);
+  // cout << "DEBUG: event message string: " << message << endl;
+  events.send(message, "measurement", millis(), false);
 }
 
-void handleNewMeasurements() {
+void writeMeasurementFileBuffer() {
+  cout << "DEBUG: writing measurements" << endl;
   if (!openMeasurementFileAppending()) {
     return;
   }
-  // Write buffers
-  for (uint32_t i = 0; i < measurements_buffer.available(); ++i) {
-    float measurement = measurements_buffer.pop();
-    uint32_t measurement_idx = indices_buffer.pop();  // NOTE: we assume that this buffer always has the same size!
-
-    // Write measurement to file
-    if (measurement_file.write(reinterpret_cast<uint8_t *>(&measurement), 4) !=
-        4) {
-      cout << "Writing measurement to ssd failed" << endl;
-    }
-    // Send measurement via websocket
-    sendMeasurementEvent(measurement_idx, measurement);
+  // Write measurement file buffer to file
+  if (measurement_file.write(
+          reinterpret_cast<uint8_t *>(measurement_file_buffer),
+          measurements_in_file_buffer * 4) != 4 * measurements_in_file_buffer) {
+    cout << "Writing measurement to ssd failed" << endl;
   }
   measurement_file.close();
+  measurements_in_file_buffer = 0;
+}
+
+void handleNewMeasurements() {
+  if (measurements_in_file_buffer > measurement_file_buffer_size - 8) {
+    writeMeasurementFileBuffer();
+  }
+  // Send data from buffer directly through event socket
+  for (uint32_t i = 0; i < measurements_buffer.available(); ++i) {
+    float measurement = measurements_buffer.pop();
+    uint32_t measurement_idx =
+        indices_buffer.pop(); // NOTE: we assume that this buffer always has the
+                              // same size!
+    measurement_file_buffer[measurements_in_file_buffer++] = measurement;
+    // Send via websocket
+    sendMeasurementEvent(measurement_idx, measurement);
+  }
 }
 
 float previous_measurement = -4200;
@@ -672,37 +721,53 @@ size_t bad_sync_messages = 0;
 // Automatically syncing serial connection
 bool getMeasurementFromArduino(uint32_t *measurement_idx, float *value) {
   // Syncing
-  if (esp_serial.available() >= 10) {
-    // skip all bytes untill a full one byte is read, which signalizes the start of a package
-    bool is_package_start_synchronized = false;
-    while (!is_package_start_synchronized && esp_serial.available() > 1) {
-      char package_start;
-      esp_serial.read(&package_start, 1);
-      is_package_start_synchronized = package_start == 0xff;
-    }
-    if (!is_package_start_synchronized) {
-      cout << "No valid datapackage received so far ...\n" << endl;
-      return false;
-    }
-    // read the index of the measurement
-    esp_serial.read(reinterpret_cast<char*>(measurement_idx), 4);
-    // read the value of the measurment
-    esp_serial.read(reinterpret_cast<char*>(value), 4);
+  if (esp_serial.available() < 10) {
+    return false;
+  }
+  // Read a byte and drop it unless a full one byte is read, which signalizes
+  // the start of a package
+  bool is_package_start_synchronized = false;
+  char package_start;
+  esp_serial.read(&package_start, 1);
+  is_package_start_synchronized = package_start == '\xFF';
+  // cout << "DEBUG: got package start: " << static_cast<int>(package_start) <<
+  // " and is_package_start_synchronized: " << is_package_start_synchronized <<
+  // endl;
+  if (!is_package_start_synchronized) {
+    cout << "Waiting for valid package start ..." << endl;
+    return false;
+  }
+  // read the value of the measurment
+  esp_serial.read(reinterpret_cast<char *>(value), 4);
+  // read the index of the measurement
+  esp_serial.read(reinterpret_cast<char *>(measurement_idx), 4);
 
-    return true;
+  // read the final byte
+  char package_end;
+  esp_serial.read(&package_end, 1);
+  if (package_end != '\x00') {
+    cout << "Package end is not 0 - dropping the pakcage with idx "
+         << *measurement_idx << " and value " << *value << endl;
+    return false;
+  }
+  // cout << "DEBUG read index: " << *measurement_idx << ", and value: " <<
+  // *value << endl;
+
+  return true;
 }
 
 void checkArdinoForMeasurements() {
-  while (esp_serial.available() >= 4) {
+  while (esp_serial.available() >= 10) {
     uint32_t measurement_idx;
     float measurement;
     if (!getMeasurementFromArduino(&measurement_idx, &measurement)) {
       return;
     }
     bool push_success = measurements_buffer.push(measurement);
-    bool push_success = indices_buffer.push(measurement_idx);
+    push_success &= indices_buffer.push(measurement_idx);
     if (!push_success) {
-      cout << "WARNING: measurement buffer ran full ... dropping measurements!"
+      cout << "WARNING: measurement and index buffer ran full ... dropping "
+              "measurements!"
            << endl;
     }
   }
@@ -712,8 +777,7 @@ void loop() {
   checkArdinoForMeasurements();
   if (measurements_buffer.available() > 0) {
     // Let clients know about the new measurements and write everything new to
-    // the file
+    // the event socket and file
     handleNewMeasurements();
-
   }
 }
