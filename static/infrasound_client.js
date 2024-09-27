@@ -4,6 +4,8 @@ var ms_between_measurements = 20;
 var is_event_listener_running = false;
 var number_of_new_measurements = 0;
 
+var computeTotalNoise = null;
+var computeSpectrumFromSquaredMagnitudes = null;
 
 pfft_module = null;
 pffft().then(async function(Module) {
@@ -122,10 +124,12 @@ function fourier_transform(timeSequence) {
   // Call function and get result
   pffft_module._pffft_runner_transform_magnitudes(pffft_runner, dataHeap.byteOffset);
 
-  var fft_result = new Float32Array(dataHeap.buffer, dataHeap.byteOffset, timeSequence.length);
-  fft_result = fft_result.slice(0, fft_result.length / 2);
+  var fft_squared_magnitudes = new Float32Array(dataHeap.buffer, dataHeap.byteOffset, timeSequence.length);
+  fft_squared_magnitudes = fft_squared_magnitudes.slice(0, fft_squared_magnitudes.length / 2);
 
-  return fft_result;
+  scaled_magnitudes = fft_squared_magnitudes.map(value => 2 * value ** 0.5 / timeSequence.length);
+
+  return scaled_magnitudes;
 }
 
 function addSpinners() {
@@ -160,6 +164,11 @@ function removeSpinners() {
   }
 }
 
+function setTotalNoise(totalValue) {
+  var totalValueElement = document.getElementById("totalValue");
+  totalValueElement.innerText = totalValue;
+}
+
 function updateCharts() {
   // We never show data older than 5 minutes = 15000 samples @ 50 Hz
   measurement_buffer = measurement_buffer.slice(-15000);
@@ -191,11 +200,18 @@ function updateCharts() {
   }
 
   var spectrum = fourier_transform(fft_time_sequence);
-
-  var spectrumChartData = [];
+  var frequencies = Array(spectrum.length);
   for (var i = 0; i < spectrum.length; i++) {
     var hz = i * 50.0 / fft_time_sequence.length;
-    spectrumChartData[i] = [hz, spectrum[i] ** 0.5 * 2 / fft_time_sequence.length];
+    frequencies[i] = hz;
+  }
+  spectrum = computeSpectrumFromSquaredMagnitudes(spectrum, frequencies);
+  totalNoise = computeTotalNoise(spectrum, frequencies);
+  setTotalNoise(totalNoise);
+
+  var spectrumChartData = [];
+  for (let i = 0; i < spectrum.length; i++) {
+    spectrumChartData[i] = [frequencies[i], spectrum[i]];
   }
   chartSpectrum.series[0].setData(spectrumChartData, false, false, false);
   chartSpectrum.series[1].setData(spectrumChartData, false, false, false);
@@ -285,10 +301,10 @@ function setupEventListener() {
 
     source.addEventListener("measurement", function(e) {
       console.log("meassurement event", e.data);
-      var index_string = e.data.substring(0,10);
+      var index_string = e.data.substring(0, 10);
       var measurement_string = e.data.substring(10, 21);
       // TODO continue here
-      
+
       var new_measurement = parseFloat(e.data);
       measurement_buffer.push(new_measurement);
       var new_timestamp;
@@ -342,6 +358,110 @@ function handleSpectrumLogSwitch(checkbox) {
     chartSpectrum.xAxis[0].update({ type: "linear" });
     chartSpectrum.series[0].hide();
   }
+}
+
+function computeTotalRMS(frequencies, spectrum) {
+  var rms = 0.0;
+  rms = spectrum.slice(1).map(value => value ** 2).reduce((sum, value) => sum + value, 0);  // skip the first entry with static content
+  rms = rms / (spectrum.length - 1);
+  rms = Math.sqrt(rms);
+  return rms;
+}
+computeTotalNoise = computeTotalRMS;
+
+function computeTotalSPL(frequencies, spectrum) {
+  var rms = computeTotalRMS(frequencies, spectrum);
+  var p_ref = 20e-6;  // Reference value for SPL 20 micro pascal
+  var spl = 20 * Math.log10(rms / p_ref);
+  return spl;
+}
+
+function computeRMSSpectrum(frequencies, spectrum) {
+  return spectrum;
+}
+
+function computeSPLSpectrum(frequenies, spectrum) {
+  var sqrt_2 = Math.sqrt(2);
+  var p_ref = 20e-6;  // Reference value for SPL 20 micro pascal
+  return spectrum.map(value => 20 * (Math.log10((value / sqrt_2) / p_ref)));
+}
+
+function AWeighting(frequency) {
+  return 20 * Math.log10(
+    (12200 * 12200 * frequency ** 4) /
+    ((frequency ** 2 + 20.6 ** 2) * (frequency ** 2) * Math.sqrt((frequency ** 2 + 107.7 ** 2) * (frequency ** 2 + 737.9 ** 2)))
+  );
+}
+
+function computeDBASpectrum(frequencies, spectrum) {
+  var result_spectrum = computeSPLSpectrum(frequencies, spectrum);
+  for (let i = 0; i < spectrum.length; i++) {
+    result_spectrum[i] = result_spectrum[i] + AWeighting(frequencies[i]);
+  }
+  return result_spectrum;
+}
+
+function computeTotalDBA(frequencies, spectrum) {
+  dba_spectrum = computeDBASpectrum(frequencies, spectrum);
+  return 10 * Math.log10(dba_spectrum.reduce((sum, value) => sum + 10 ** (value / 10)));
+}
+
+function handleAmplitudeUnitSwitch(radio) {
+  var choice = radio.id;
+  switch (choice) {
+    case "usePa":
+      var totalTitleLabel = document.getElementById("totalTitleLabel");
+      totalTitleLabel.innerText = "Effektivwert des Schalldrucks:";
+      var totalUnit = document.getElementById("totalUnit");
+      totalUnit.innerText = "Pascal (Pa)";
+      var infoRMS = document.getElementById("infoRMS");
+      var infoSPL = document.getElementById("infoSPL");
+      var infoDBA = document.getElementById("infoDBA");
+      infoRMS.style.display = "block";
+      infoSPL.style.display = "none";
+      infoDBA.style.display = "none";
+
+      computeTotalNoise = computeTotalRMS;
+      computeSpectrumFromSquaredMagnitudes = computeRMSSpectrum;
+
+      break;
+    case "useSPL":
+      var totalTitleLabel = document.getElementById("totalTitleLabel");
+      totalTitleLabel.innerText = "Dauerschallpegel:";
+      var totalUnit = document.getElementById("totalUnit");
+      totalUnit.innerText = "db(SPL)";
+      var infoRMS = document.getElementById("infoRMS");
+      var infoSPL = document.getElementById("infoSPL");
+      var infoDBA = document.getElementById("infoDBA");
+      infoRMS.style.display = "none";
+      infoSPL.style.display = "block";
+      infoDBA.style.display = "none";
+
+      computeTotalNoise = computeTotalSPL;
+      computeSpectrumFromSquaredMagnitudes = computeSPLSpectrum;
+      //todo
+      break;
+    case "useDbA":
+      var totalTitleLabel = document.getElementById("totalTitleLabel");
+      totalTitleLabel.innerText = "A-bewerteter Schallpegel";
+      var totalUnit = document.getElementById("totalUnit");
+      totalUnit.innerText = "db(A)";
+      var infoRMS = document.getElementById("infoRMS");
+      var infoSPL = document.getElementById("infoSPL");
+      var infoDBA = document.getElementById("infoDBA");
+      infoRMS.style.display = "none";
+      infoSPL.style.display = "none";
+      infoDBA.style.display = "block";
+
+      computeTotalNoise = computeTotalDBA;
+      computeSpectrumFromSquaredMagnitudes = computeDBASpectrum;
+      //todo
+      break;
+    default:
+      console.log("WARNING: got unexpected choice for amplitude unit", choice);
+  }
+
+
 }
 
 addSpinners();
