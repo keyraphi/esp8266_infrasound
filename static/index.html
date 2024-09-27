@@ -1,7 +1,8 @@
 <!DOCTYPE HTML>
-<html>
+<html lang="de">
 
 <head>
+  <meta charset="utf-8">
   <meta name="infrasound viewport" content="width=device-with, initial-scale=1">
   <script src="https://code.highcharts.com/highcharts.js"></script>
   <script src="https://code.highcharts.com/modules/exporting.js"></script>
@@ -46,82 +47,88 @@
           <div id="totalUnit" class="p-2 fs-2">Pascal (Pa)</div>
         </div>
         <div>
-          <button id="infoRMS" class="btn text-light" style="background-color: #059e8a; display: block" type="button" data-bs-toggle="collapse" data-bs-target="#totalUnitExplanationRMS" aria-expanded="false" aria-controls="totalUnitExplanationRMS">
-              Info Effektivwert des Schalldrucks
+          <button id="infoRMS" class="btn text-light" style="background-color: #059e8a; display: block" type="button"
+            data-bs-toggle="collapse" data-bs-target="#totalUnitExplanationRMS" aria-expanded="false"
+            aria-controls="totalUnitExplanationRMS">
+            Info Effektivwert des Schalldrucks
           </button>
-          <button id="infoSPL" class="btn text-light" style="background-color: #059e8a; display: none;" type="button" data-bs-toggle="collapse" data-bs-target="#totalUnitExplanationSPL" aria-expanded="false" aria-controls="totalUnitExplanationSPL">
-              Info Dauerschallpegel
+          <button id="infoSPL" class="btn text-light" style="background-color: #059e8a; display: none;" type="button"
+            data-bs-toggle="collapse" data-bs-target="#totalUnitExplanationSPL" aria-expanded="false"
+            aria-controls="totalUnitExplanationSPL">
+            Info Dauerschallpegel
           </button>
-          <button id="infoDBA" class="btn text-light" style="background-color: #059e8a; display: none;" type="button" data-bs-toggle="collapse" data-bs-target="#totalUnitExplanationDBA" aria-expanded="false" aria-controls="totalUnitExplanationDBA">
-              Info A-bewerteter Schallpegel
+          <button id="infoDBA" class="btn text-light" style="background-color: #059e8a; display: none;" type="button"
+            data-bs-toggle="collapse" data-bs-target="#totalUnitExplanationDBA" aria-expanded="false"
+            aria-controls="totalUnitExplanationDBA">
+            Info A-bewerteter Schallpegel
           </button>
         </div>
         <div id="totalUnitExplanationRMS" class="collapse">
-            <div class="card card-body">
-              Der Effektivwert des gesammtschalldrucks ist ein Maß zur Bestimmung der Gesammtenergie eines Schallsignals.
-              Der Wert zeigt die durchschnittliche Druckdifferenz an und wird aus dem unten angezeigten Frequenzspektrum
-              berechnet.<br></br>
-              Die Zeit Serie zeigt direkt die Druckmessungen in Pascal an, genauso wie sie aus dem Sensor
-              kommen.<br></br>
-              Das Spektrum zeigt an wie sich das Signal in der Zeit Serie aus untreschiedlichen Frequenzen zusammensetzt.
-              Für jede Frequenz wird eine Amplitude in Pascal angezeigt. Wenn aus jeder dieser Frequenz-Amplituden
-              kombinationen
-              eine Sinuskurve erstellt wird und all dieses Sinuskurven zusammenaddiert werden kommt das ursprüngliche
-              Zeitsignal
-              heraus.
-            </div>
+          <div class="card card-body">
+            Der Effektivwert des gesammtschalldrucks ist ein Maß zur Bestimmung der Gesammtenergie eines Schallsignals.
+            Der Wert zeigt die durchschnittliche Druckdifferenz an und wird aus dem unten angezeigten Frequenzspektrum
+            berechnet.<br></br>
+            Die Zeit Serie zeigt direkt die Druckmessungen in Pascal an, genauso wie sie aus dem Sensor
+            kommen.<br></br>
+            Das Spektrum zeigt an wie sich das Signal in der Zeit Serie aus untreschiedlichen Frequenzen zusammensetzt.
+            Für jede Frequenz wird eine Amplitude in Pascal angezeigt. Wenn aus jeder dieser Frequenz-Amplituden
+            kombinationen
+            eine Sinuskurve erstellt wird und all dieses Sinuskurven zusammenaddiert werden kommt das ursprüngliche
+            Zeitsignal
+            heraus.
+          </div>
         </div>
         <div id="totalUnitExplanationSPL" class="collapse">
-            <div class="card card-body">
-              Der "Dauerschallpegel" oder "sound preasure level" wird mit dB(SPL) oder dB(L) abgekürzt.
-              Das dB steht für Dezibel. Dezibel ist eine logarithmische Einheit, die den Schalldruck im Verhältnis zu
-              einem Referenzwert beschreibt.
-              Für db(SPL) wird die Wahrnemungsschwelle des Menschlichen Gehörs für einen Sinuston bei 1000 Hz benutzt.
-              Dieser Referenzwert beträgt 20 µPa (20*10^-6 Pascal). Das bedeutet, dass 1 db(SPL) = 20 µPa entspricht.
-              Beachte, dass die Wahrnemungsschwelle von Menschen frequenzabhängig ist. Insbesondere im Infraschall
-              bereich
-              ist die Wahrnemungsschwelle sehr viel höher.
-              Außerdem ist Dezibel eine logarithmische Einheit. So verdoppelt sich der Druck in Pascal für alle 6 dB die
-              der Gesammtschalldruckpegel zunimmt.
-              Bei einer Zunahme von 10 dB hat sich der Druck in Pascal verzehnfacht. <br></br>
-              Die Zeit Serie zeigt direkt die Druckmessungen in Pascal an, genauso wie sie aus dem
-              Sensor kommen.<br></br>
-              Das Spektrum wird nun auch in db(SPL) angezeigt und gibt für jede Frequenz einzeln den Schallpegel an.
+          <div class="card card-body">
+            Der "Dauerschallpegel" oder "sound preasure level" wird mit dB(SPL) oder dB(L) abgekürzt.
+            Das dB steht für Dezibel. Dezibel ist eine logarithmische Einheit, die den Schalldruck im Verhältnis zu
+            einem Referenzwert beschreibt.
+            Für db(SPL) wird die Wahrnemungsschwelle des Menschlichen Gehörs für einen Sinuston bei 1000 Hz benutzt.
+            Dieser Referenzwert beträgt 20 µPa (20*10^-6 Pascal). Das bedeutet, dass 1 db(SPL) = 20 µPa entspricht.
+            Beachte, dass die Wahrnemungsschwelle von Menschen frequenzabhängig ist. Insbesondere im Infraschall
+            bereich
+            ist die Wahrnemungsschwelle sehr viel höher.
+            Außerdem ist Dezibel eine logarithmische Einheit. So verdoppelt sich der Druck in Pascal für alle 6 dB die
+            der Gesammtschalldruckpegel zunimmt.
+            Bei einer Zunahme von 10 dB hat sich der Druck in Pascal verzehnfacht. <br></br>
+            Die Zeit Serie zeigt direkt die Druckmessungen in Pascal an, genauso wie sie aus dem
+            Sensor kommen.<br></br>
+            Das Spektrum wird nun auch in db(SPL) angezeigt und gibt für jede Frequenz einzeln den Schallpegel an.
           </div>
         </div>
         <div id="totalUnitExplanationDBA" class="collapse">
-            <div class="card card-body">
-              "A-bewerteter Schallpegel" oder "A-bewerteter äquivalenter Dauerschallpegel" wird dB(A) abgekürzt.
-              Dieser A-bewertete Schallpegel db(A) ist ähnlich wie der normale Schallpegel dB(SPL).
-              Er verwendet diselbe logarithmische Skala.
-              Der Unterschied besteht darin, dass die Amplitude jede Frequenz "A-bewertetet" wird bevor sie im
-              Spektrum angezeigt wird, oder
-              in den Dauerschallpegel oben eingerechnet wird.
-              Das menschliche Ohr nimmt Töne mit gleichm Schalldruck in unterschiedlichen Freqzenzen (Tonhöhen)
-              unterschiedlich laut wahr.
-              So ist das menschliche Gehör zum Beispiel besonders empfindlich im bereich 1 kHz - 10 kHz und viel
-              weniger Empfindlich im Bereich
-              von 20 Hz - 100 Hz. Das bedeutet, dass etwa für 20 Hz ein höherer Schalldruck notwendig ist um einen
-              Ton gleich laut wirken zu lassen
-              wie ein Ton mit 5 kHz. Die Frequenzbewertung bewertet deshalb einen 20 Hz Ton als schwächer als einen
-              5 kHz Ton und korrigiert den Pegel
-              somit auf die menschliche Wahrnehmung. Die Frequenzabhängigkeit des menschlichen Gehörs ist widerum
-              abhängig von der Lautstärke des
-              Signals. So ist z.B. für sehr laute Industrieanlagen eine andere Frequenzbewertung nötig als für
-              vergleichsweise leise Anlagen wie Windräder.
-              Im deutschen Rechtsystem wird die A-Bewertung verwendet, welche auf Wahrnehmungsmessungen bei 20 - 40
-              phon beruhen, was etwa die Lautstärke von Flüstern bis zu einer leisen Unterhaltung entspricht.
-              Der A-bewertete Schallpegel dB(A) beschreibt also den Schallpegel nach einer Frequenzbewertung mit der
-              A-Bewertung und
-              entspricht damit etwa der tatsächlich wahrgenommenen Lautstärke.
-              In reinen Wohngebieten ist ein A-bewerteter Dauerschallpegel von 50 dB(A) bei Tag und 35 dB(A) bei
-              Nacht zulässig. In
-              Allgemeinen Wohngebieten sind es 5 dB(A) mehr und Kerngebite, Dorfgebiete oder Mischgebite 10 dB(A)
-              mehr. <br></br>
-              Die Zeit Serie zeigt direkt die Druckmessungen in Pascal an, genauso wie sie aus dem
-              Sensor kommen.<br></br>
-              Das Spektrum wird nun auch in db(A) angezeigt und gibt für jede Frequenz einzeln den A-bewerteten
-              Schallpegel an.
+          <div class="card card-body">
+            "A-bewerteter Schallpegel" oder "A-bewerteter äquivalenter Dauerschallpegel" wird dB(A) abgekürzt.
+            Dieser A-bewertete Schallpegel db(A) ist ähnlich wie der normale Schallpegel dB(SPL).
+            Er verwendet diselbe logarithmische Skala.
+            Der Unterschied besteht darin, dass die Amplitude jede Frequenz "A-bewertetet" wird bevor sie im
+            Spektrum angezeigt wird, oder
+            in den Dauerschallpegel oben eingerechnet wird.
+            Das menschliche Ohr nimmt Töne mit gleichm Schalldruck in unterschiedlichen Freqzenzen (Tonhöhen)
+            unterschiedlich laut wahr.
+            So ist das menschliche Gehör zum Beispiel besonders empfindlich im bereich 1 kHz - 10 kHz und viel
+            weniger Empfindlich im Bereich
+            von 20 Hz - 100 Hz. Das bedeutet, dass etwa für 20 Hz ein höherer Schalldruck notwendig ist um einen
+            Ton gleich laut wirken zu lassen
+            wie ein Ton mit 5 kHz. Die Frequenzbewertung bewertet deshalb einen 20 Hz Ton als schwächer als einen
+            5 kHz Ton und korrigiert den Pegel
+            somit auf die menschliche Wahrnehmung. Die Frequenzabhängigkeit des menschlichen Gehörs ist widerum
+            abhängig von der Lautstärke des
+            Signals. So ist z.B. für sehr laute Industrieanlagen eine andere Frequenzbewertung nötig als für
+            vergleichsweise leise Anlagen wie Windräder.
+            Im deutschen Rechtsystem wird die A-Bewertung verwendet, welche auf Wahrnehmungsmessungen bei 20 - 40
+            phon beruhen, was etwa die Lautstärke von Flüstern bis zu einer leisen Unterhaltung entspricht.
+            Der A-bewertete Schallpegel dB(A) beschreibt also den Schallpegel nach einer Frequenzbewertung mit der
+            A-Bewertung und
+            entspricht damit etwa der tatsächlich wahrgenommenen Lautstärke.
+            In reinen Wohngebieten ist ein A-bewerteter Dauerschallpegel von 50 dB(A) bei Tag und 35 dB(A) bei
+            Nacht zulässig. In
+            Allgemeinen Wohngebieten sind es 5 dB(A) mehr und Kerngebite, Dorfgebiete oder Mischgebite 10 dB(A)
+            mehr. <br></br>
+            Die Zeit Serie zeigt direkt die Druckmessungen in Pascal an, genauso wie sie aus dem
+            Sensor kommen.<br></br>
+            Das Spektrum wird nun auch in db(A) angezeigt und gibt für jede Frequenz einzeln den A-bewerteten
+            Schallpegel an.
           </div>
         </div>
       </div>
