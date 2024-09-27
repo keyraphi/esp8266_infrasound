@@ -227,7 +227,7 @@ function setupEventListener() {
     }, false);
 
     source.addEventListener("measurement", function(e) {
-      console.log("meassurement event", e.data);
+      // console.log("meassurement event", e.data);
       message = e.data.split(";");
       if (message.length != 2) {
         console.log("ERROR: message length is", message.length);
@@ -322,11 +322,21 @@ function computeSPLSpectrum(frequenies, spectrum) {
   return spectrum.map(value => 20 * (Math.log10((value / sqrt_2) / p_ref)));
 }
 
-function AWeighting(frequency) {
-  return 20 * Math.log10(
-    (12200 * 12200 * frequency ** 4) /
-    ((frequency ** 2 + 20.6 ** 2) * (frequency ** 2) * Math.sqrt((frequency ** 2 + 107.7 ** 2) * (frequency ** 2 + 737.9 ** 2)))
-  );
+function AWeighting(f) {
+    // Coefficients for A-weighting formula
+    const c1 = 12200 ** 2;
+    const c2 = 20.6 ** 2;
+    const c3 = 107.7 ** 2;
+    const c4 = 737.9 ** 2;
+    
+    // Calculate A-weighting in linear scale
+    let numerator = c1 * (f ** 4);
+    let denominator = (f ** 2 + c2) * Math.sqrt((f ** 2 + c3) * (f ** 2 + c4)) * (f ** 2 + c1);
+    
+    let A = numerator / denominator;
+    
+    // Convert to dB (relative scale)
+    return 20 * Math.log10(A) + 2.0;  // A-weighting has a +2.0 dB offset
 }
 
 function computeDBASpectrum(frequencies, spectrum) {
