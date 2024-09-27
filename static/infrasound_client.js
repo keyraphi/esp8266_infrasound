@@ -137,7 +137,7 @@ function fourier_transform(timeSequence) {
 
 function setTotalNoise(totalValue) {
   var totalValueElement = document.getElementById("totalValue");
-  totalValueElement.innerText = totalValue;
+  totalValueElement.innerText = totalValue.toFixed(4);
 }
 
 function updateCharts() {
@@ -177,8 +177,8 @@ function updateCharts() {
     var hz = i * 50.0 / fft_time_sequence.length;
     frequencies[i] = hz;
   }
-  spectrum = computeSpectrumFromSquaredMagnitudes(spectrum, frequencies);
-  totalNoise = computeTotalNoise(spectrum, frequencies);
+  spectrum = computeSpectrumFromSquaredMagnitudes(frequencies, spectrum);
+  totalNoise = computeTotalNoise(frequencies, spectrum);
   setTotalNoise(totalNoise);
 
   var spectrumChartData = [];
@@ -314,6 +314,7 @@ function computeTotalSPL(frequencies, spectrum) {
 function computeRMSSpectrum(frequencies, spectrum) {
   return spectrum;
 }
+computeSpectrumFromSquaredMagnitudes = computeRMSSpectrum;
 
 function computeSPLSpectrum(frequenies, spectrum) {
   var sqrt_2 = Math.sqrt(2);
