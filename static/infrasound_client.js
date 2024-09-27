@@ -36,7 +36,8 @@ var chartTimeSeries = new Highcharts.Chart({
     dateTimeLabelFormats: { second: "%H:%M:%S" }
   },
   yAxis: {
-    title: { text: "Relativer Luftdruck [Pa]" }
+    title: { text: "Relativer Luftdruck [Pa]" },
+    gridLineWidth: 1
   },
   credits: { enabled: false },
   time: {
@@ -82,6 +83,7 @@ var chartSpectrum = new Highcharts.Chart({
   },
   yAxis: {
     title: { text: "Amplitude [Pa]" },
+    gridLineWidth: 1
   },
   credits: { enabled: false }
 });
@@ -90,6 +92,7 @@ var chartSpectrum = new Highcharts.Chart({
 
 var measurement_buffer = [];
 var times_buffer = [];
+var index_buffer = [];
 var pffft_runner = null;
 var dataPtr = null;
 var dataHeap = null;
@@ -132,38 +135,6 @@ function fourier_transform(timeSequence) {
   return scaled_magnitudes;
 }
 
-function addSpinners() {
-  // Spinner for time series
-  var time_spinner = document.createElement("div");
-  var time_spinner_hidden = document.createElement("span");
-  time_spinner.classList.add("spinner-border");
-  time_spinner.classList.add("text-primary");
-  time_spinner_hidden.classList.add("visually-hidden");
-  time_spinner_hidden.innerText = "Loading...";
-  time_spinner.appendChild(time_spinner_hidden);
-  // Spinner for time spectrum
-  var spectrum_spinner = document.createElement("div");
-  var spectrum_spinner_hidden = document.createElement("span");
-  spectrum_spinner.classList.add("spinner-border");
-  spectrum_spinner.classList.add("text-primary");
-  spectrum_spinner_hidden.classList.add("visually-hidden");
-  spectrum_spinner_hidden.innerText = "Loading...";
-  spectrum_spinner.appendChild(spectrum_spinner_hidden);
-
-  // add to page
-  var time_container = document.getElementById("infrasound-time-serie");
-  time_container.appendChild(time_spinner);
-  var spectrum_container = document.getElementById("infrasound-spectrum");
-  spectrum_container.appendChild(spectrum_spinner);
-}
-
-function removeSpinners() {
-  var spinner_elements = document.getElementsByClassName("spinner-border");
-  while (spinner_elements.length > 0) {
-    spinner_elements[0].remove();
-  }
-}
-
 function setTotalNoise(totalValue) {
   var totalValueElement = document.getElementById("totalValue");
   totalValueElement.innerText = totalValue;
@@ -173,6 +144,7 @@ function updateCharts() {
   // We never show data older than 5 minutes = 15000 samples @ 50 Hz
   measurement_buffer = measurement_buffer.slice(-15000);
   times_buffer = times_buffer.slice(-15000);
+  index_buffer = index_buffer.slice(-15000);
 
   // Update data in time chart
   chart_data_time = times_buffer.slice(-chartTimeSeriesDuration);
@@ -218,34 +190,6 @@ function updateCharts() {
   chartSpectrum.update({}, true, false, false);
 }
 
-function load_initial_sensor_data(xmlhttp) {
-  if (xmlhttp.readyState == XMLHttpRequest.DONE && xmlhttp.status == 200) {
-
-    var measurements = JSON.parse(xmlhttp.responseText);
-    var next_start_idx = measurements["next_start_idx"];
-
-    // If the sensor ran a while the start time stamp will be further back than
-    // the maximum number of measurements we load from the sensor, thus it will be off.
-    // However thenext start_idx tells us how many measurements have been reccorded in total, so we can use it to compute
-    // the start time of the sequence that was loaded
-    start_timestamp = start_timestamp + (next_start_idx - 1) * ms_between_measurements - measurements["preassure"].length * ms_between_measurements;
-
-    for (let i = 0; i < measurements["preassure"].length; i++) {
-      var new_timestamp;
-      if (times_buffer.length == 0) {
-        new_timestamp = start_timestamp;
-      } else {
-        new_timestamp = times_buffer[times_buffer.length - 1] + ms_between_measurements;
-      }
-      times_buffer.push(new_timestamp);
-      measurement_buffer.push(measurements["preassure"][i]);
-    }
-    removeSpinners();
-    updateCharts();
-    setupEventListener();
-  }
-}
-
 // load the start-timestamp
 var start_timestamp_request = new XMLHttpRequest();
 
@@ -255,7 +199,7 @@ start_timestamp_request.onreadystatechange = function() {
     console.log("Initial timestamp: ", responseText);
     start_timestamp = parseInt(responseText);
     console.log("Loading initial measurements...");
-    load_initail_measurements();
+    setupEventListener();
   }
 };
 start_timestamp_request.open(
@@ -263,23 +207,6 @@ start_timestamp_request.open(
   "/start_timestamp", true);
 start_timestamp_request.send();
 
-
-// initially load all available sensor data
-function load_initail_measurements() {
-  var initial_sensor_data_request = new XMLHttpRequest();
-  initial_sensor_data_request.onreadystatechange = function() {
-    if (initial_sensor_data_request.readyState == XMLHttpRequest.DONE && initial_sensor_data_request.status == 200) {
-      console.log("initial measurements were loaded")
-      load_initial_sensor_data(initial_sensor_data_request);
-    }
-  }
-  initial_sensor_data_request.open(
-    "GET",
-    "/measurements?&start_with_idx=0&max_length=15000"
-  );
-  initial_sensor_data_request.send();
-  addSpinners();
-}
 
 
 function setupEventListener() {
@@ -301,19 +228,27 @@ function setupEventListener() {
 
     source.addEventListener("measurement", function(e) {
       console.log("meassurement event", e.data);
-      var index_string = e.data.substring(0, 10);
-      var measurement_string = e.data.substring(10, 21);
-      // TODO continue here
+      message = e.data.split(";");
+      if (message.length != 2) {
+        console.log("ERROR: message length is", message.length);
+        return;
+      }
+      let index_string = message[0];
+      let meassurement_string = message[1];
 
-      var new_measurement = parseFloat(e.data);
+      let new_index = parseInt(index_string);
+      let new_measurement = parseFloat(meassurement_string);
       measurement_buffer.push(new_measurement);
       var new_timestamp;
       if (times_buffer.length == 0) {
         new_timestamp = start_timestamp;
       } else {
-        new_timestamp = times_buffer[times_buffer.length - 1] + ms_between_measurements;
+        let start_idx = index_buffer[index_buffer.length - 1];
+        let time_since_start = (new_index - start_idx) * ms_between_measurements
+        new_timestamp = times_buffer[times_buffer.length - 1] + time_since_start;
       }
       times_buffer.push(new_timestamp);
+      index_buffer.push(new_index);
       number_of_new_measurements += 1;
       if (number_of_new_measurements > 10) {
         updateCharts();
@@ -424,6 +359,8 @@ function handleAmplitudeUnitSwitch(radio) {
       computeTotalNoise = computeTotalRMS;
       computeSpectrumFromSquaredMagnitudes = computeRMSSpectrum;
 
+      chartSpectrum.yAxis.title = "Amplitude [Pa]"; 
+
       break;
     case "useSPL":
       var totalTitleLabel = document.getElementById("totalTitleLabel");
@@ -437,9 +374,10 @@ function handleAmplitudeUnitSwitch(radio) {
       infoSPL.style.display = "block";
       infoDBA.style.display = "none";
 
+
       computeTotalNoise = computeTotalSPL;
       computeSpectrumFromSquaredMagnitudes = computeSPLSpectrum;
-      //todo
+      chartSpectrum.yAxis.title = "Schallpegel [dB(SPL)]"; 
       break;
     case "useDbA":
       var totalTitleLabel = document.getElementById("totalTitleLabel");
@@ -455,13 +393,10 @@ function handleAmplitudeUnitSwitch(radio) {
 
       computeTotalNoise = computeTotalDBA;
       computeSpectrumFromSquaredMagnitudes = computeDBASpectrum;
+      chartSpectrum.yAxis.title = "Schallpegel [dB(A)]"; 
       //todo
       break;
     default:
       console.log("WARNING: got unexpected choice for amplitude unit", choice);
   }
-
-
 }
-
-addSpinners();
