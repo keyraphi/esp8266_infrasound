@@ -130,7 +130,7 @@ function fourier_transform(timeSequence) {
   var fft_squared_magnitudes = new Float32Array(dataHeap.buffer, dataHeap.byteOffset, timeSequence.length);
   fft_squared_magnitudes = fft_squared_magnitudes.slice(0, fft_squared_magnitudes.length / 2);
 
-  scaled_magnitudes = fft_squared_magnitudes.map(value => 2 * value ** 0.5 / timeSequence.length);
+  var scaled_magnitudes = fft_squared_magnitudes.map(value => 2 * value ** 0.5 / timeSequence.length);
 
   return scaled_magnitudes;
 }
@@ -177,13 +177,13 @@ function updateCharts() {
     var hz = i * 50.0 / fft_time_sequence.length;
     frequencies[i] = hz;
   }
-  spectrum = computeSpectrumFromSquaredMagnitudes(frequencies, spectrum);
+  scaled_spectrum = computeSpectrumFromSquaredMagnitudes(frequencies, spectrum);
   totalNoise = computeTotalNoise(frequencies, spectrum);
   setTotalNoise(totalNoise);
 
   var spectrumChartData = [];
-  for (let i = 0; i < spectrum.length; i++) {
-    spectrumChartData[i] = [frequencies[i], spectrum[i]];
+  for (let i = 0; i < scaled_spectrum.length; i++) {
+    spectrumChartData[i] = [frequencies[i], scaled_spectrum[i]];
   }
   chartSpectrum.series[0].setData(spectrumChartData, false, false, false);
   chartSpectrum.series[1].setData(spectrumChartData, false, false, false);
@@ -321,7 +321,6 @@ function computeSPLSpectrum(frequenies, spectrum) {
   var p_ref = 20e-6;  // Reference value for SPL 20 micro pascal
   return spectrum.map(value => 20 * (Math.log10((value / sqrt_2) / p_ref)));
 }
-
 function AWeighting(f) {
     // Coefficients for A-weighting formula
     const c1 = 12200 ** 2;
@@ -370,7 +369,7 @@ function handleAmplitudeUnitSwitch(radio) {
       computeTotalNoise = computeTotalRMS;
       computeSpectrumFromSquaredMagnitudes = computeRMSSpectrum;
 
-      chartSpectrum.yAxis.title = "Amplitude [Pa]"; 
+      chartSpectrum.yAxis[0].axisTitle.textStr = "Amplitude [Pa]"; 
 
       break;
     case "useSPL":
@@ -388,7 +387,7 @@ function handleAmplitudeUnitSwitch(radio) {
 
       computeTotalNoise = computeTotalSPL;
       computeSpectrumFromSquaredMagnitudes = computeSPLSpectrum;
-      chartSpectrum.yAxis.title = "Schallpegel [dB(SPL)]"; 
+      chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(SPL)]"; 
       break;
     case "useDbA":
       var totalTitleLabel = document.getElementById("totalTitleLabel");
@@ -404,7 +403,7 @@ function handleAmplitudeUnitSwitch(radio) {
 
       computeTotalNoise = computeTotalDBA;
       computeSpectrumFromSquaredMagnitudes = computeDBASpectrum;
-      chartSpectrum.yAxis.title = "Schallpegel [dB(A)]"; 
+      chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(A)]"; 
       //todo
       break;
     default:
