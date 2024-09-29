@@ -181,6 +181,8 @@ function updateCharts() {
   totalNoise = computeTotalNoise(frequencies, spectrum);
   setTotalNoise(totalNoise);
 
+  updateSpectrogram(scaled_spectrum.slice(1));
+
   var spectrumChartData = [];
   for (let i = 0; i < scaled_spectrum.length; i++) {
     spectrumChartData[i] = [frequencies[i], scaled_spectrum[i]];
@@ -241,7 +243,7 @@ function setupEventListener() {
       measurement_buffer.push(new_measurement);
       var new_timestamp;
       if (times_buffer.length == 0) {
-        new_timestamp = start_timestamp;
+        new_timestamp = start_timestamp + new_index * ms_between_measurements;
       } else {
         let start_idx = index_buffer[index_buffer.length - 1];
         let time_since_start = (new_index - start_idx) * ms_between_measurements
@@ -277,6 +279,7 @@ document.getElementById("spectrumRange").oninput = function() {
   cleanup_pfft();
   initialize_pfft(val);
   document.getElementById("SpectrumRangeIndicator").innerHTML = "Spektrum Analyse Dauer: " + val / 50.0 + " seconds (" + val + " samples)";
+  resizeCanvas();
 };
 
 // By default use linear spectrum and hide line chart
@@ -322,20 +325,20 @@ function computeSPLSpectrum(frequenies, spectrum) {
   return spectrum.map(value => 20 * (Math.log10((value / sqrt_2) / p_ref)));
 }
 function AWeighting(f) {
-    // Coefficients for A-weighting formula
-    const c1 = 12200 ** 2;
-    const c2 = 20.6 ** 2;
-    const c3 = 107.7 ** 2;
-    const c4 = 737.9 ** 2;
-    
-    // Calculate A-weighting in linear scale
-    let numerator = c1 * (f ** 4);
-    let denominator = (f ** 2 + c2) * Math.sqrt((f ** 2 + c3) * (f ** 2 + c4)) * (f ** 2 + c1);
-    
-    let A = numerator / denominator;
-    
-    // Convert to dB (relative scale)
-    return 20 * Math.log10(A) + 2.0;  // A-weighting has a +2.0 dB offset
+  // Coefficients for A-weighting formula
+  const c1 = 12200 ** 2;
+  const c2 = 20.6 ** 2;
+  const c3 = 107.7 ** 2;
+  const c4 = 737.9 ** 2;
+
+  // Calculate A-weighting in linear scale
+  let numerator = c1 * (f ** 4);
+  let denominator = (f ** 2 + c2) * Math.sqrt((f ** 2 + c3) * (f ** 2 + c4)) * (f ** 2 + c1);
+
+  let A = numerator / denominator;
+
+  // Convert to dB (relative scale)
+  return 20 * Math.log10(A) + 2.0;  // A-weighting has a +2.0 dB offset
 }
 
 function computeDBASpectrum(frequencies, spectrum) {
@@ -347,8 +350,12 @@ function computeDBASpectrum(frequencies, spectrum) {
 }
 
 function computeTotalDBA(frequencies, spectrum) {
-  dba_spectrum = computeDBASpectrum(frequencies, spectrum);
-  return 10 * Math.log10(dba_spectrum.reduce((sum, value) => sum + 10 ** (value / 10)));
+  let dba_spectrum = computeDBASpectrum(frequencies, spectrum);
+  let linear_spectrum = dba_spectrum.map(value => 10 ** (value / 10))
+  let total_linear_perassure = linear_spectrum.reduce((sum, value) => sum + value, 0);
+  let result = 10 * Math.log10(total_linear_perassure);
+  return result;
+  // return 10 * Math.log10(dba_spectrum.reduce((sum, value) => sum + 10 ** (value / 10), 0));
 }
 
 function handleAmplitudeUnitSwitch(radio) {
@@ -369,7 +376,7 @@ function handleAmplitudeUnitSwitch(radio) {
       computeTotalNoise = computeTotalRMS;
       computeSpectrumFromSquaredMagnitudes = computeRMSSpectrum;
 
-      chartSpectrum.yAxis[0].axisTitle.textStr = "Amplitude [Pa]"; 
+      chartSpectrum.yAxis[0].axisTitle.textStr = "Amplitude [Pa]";
 
       break;
     case "useSPL":
@@ -387,7 +394,7 @@ function handleAmplitudeUnitSwitch(radio) {
 
       computeTotalNoise = computeTotalSPL;
       computeSpectrumFromSquaredMagnitudes = computeSPLSpectrum;
-      chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(SPL)]"; 
+      chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(SPL)]";
       break;
     case "useDbA":
       var totalTitleLabel = document.getElementById("totalTitleLabel");
@@ -403,10 +410,132 @@ function handleAmplitudeUnitSwitch(radio) {
 
       computeTotalNoise = computeTotalDBA;
       computeSpectrumFromSquaredMagnitudes = computeDBASpectrum;
-      chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(A)]"; 
+      chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(A)]";
       //todo
       break;
     default:
       console.log("WARNING: got unexpected choice for amplitude unit", choice);
   }
+  // Reset canvas
+  resizeCanvas();
 }
+
+// Constants for spectrogram dimensions
+var canvasWidth = 800;   // Number of time steps (X-axis)
+var fft_window = 2 ** document.getElementById("spectrumRange").value;
+var canvasHeight = fft_window / 2 - 1;  // Number of frequency bins (Y-axis) except for the constant (first) frequency
+
+// Set up Pixi.js application
+const app = new PIXI.Application({
+  width: canvasWidth,
+  height: canvasHeight,
+  backgroundColor: 0x000000, // Black background
+  resolution: window.devicePixelRatio || 1,
+  autoDensity: true,
+});
+
+document.getElementById("SpectrumDiv").appendChild(app.view);
+
+// Create a texture to display the spectrogram
+var spectrogramTexture = PIXI.Texture.fromBuffer(new Uint8Array(canvasWidth * canvasHeight * 4), canvasWidth, canvasHeight);
+var spectrogramSprite = new PIXI.Sprite(spectrogramTexture);
+app.stage.addChild(spectrogramSprite);
+
+// Spectrogram buffer (to keep track of data over time)
+var spectrogramBufferRaw = new Float32Array(canvasWidth * canvasHeight);
+var spectrogramBuffer = new Uint8Array(canvasWidth * canvasHeight * 4); // 4 for RGBA
+
+// Function to map normalized intensity to heatmap color
+function getHeatmapColor(intensity) {
+  let r = 0, g = 0, b = 0;
+
+  if (intensity <= 127) {
+    r = 0;
+    g = Math.floor((intensity / 127) * 255);
+    b = 255;
+  } else if (intensity <= 191) {
+    r = 0;
+    g = 255;
+    b = Math.floor(255 - ((intensity - 127) / 64) * 255);
+  } else {
+    r = Math.floor(((intensity - 191) / 64) * 255);
+    g = Math.floor(255 - ((intensity - 191) / 64) * 255);
+    b = 0;
+  }
+
+  return [r, g, b];
+}
+
+// Function to update the spectrogram with heatmap colors
+function updateSpectrogram(newSpectrum) {
+  // Shift the current spectrogram buffer to the left
+  for (let y = 0; y < canvasHeight; y++) {
+    for (let x = 0; x < canvasWidth - 1; x++) {
+      let oldIndex = (y * canvasWidth + x);
+      let newIndex = (y * canvasWidth + (x + 1));
+      spectrogramBufferRaw[oldIndex] = spectrogramBufferRaw[newIndex];
+    }
+  }
+
+  // Insert the new spectrum into the rightmost column with heatmap colors
+  for (let y = 0; y < newSpectrum.length; y++) {
+    let index = (y * canvasWidth + (canvasWidth - 1));
+    spectrogramBufferRaw[index] = newSpectrum[y];
+  }
+
+  // get value range
+  let maxVal = spectrogramBufferRaw.reduce((max, value) => Math.max(max, value), Number.MIN_VALUE);
+  let minVal = spectrogramBufferRaw.reduce((min, value) => Math.min(min, value), Number.MAX_VALUE);
+
+  console.log("DEBUG min:", minVal, "max:", maxVal);
+  if (minVal === Number.NEGATIVE_INFINITY) {
+    console.log(newSpectrum);
+  }
+  if (maxVal == minVal) {
+    maxVal = 1;
+    minVal = 0;
+  }
+
+  // normalizedSpectrum
+  let normalizedSpectrum = spectrogramBufferRaw.map(value => Math.floor((value - minVal) / (maxVal - minVal) * 255));
+  // apply heatmap
+  for (let i = 0; i < normalizedSpectrum.length; i++) {
+    let intensity = normalizedSpectrum[i];
+    let [r, g, b] = getHeatmapColor(intensity);
+    let index = i * 4;
+    spectrogramBuffer[index] = r;
+    spectrogramBuffer[index + 1] = g;
+    spectrogramBuffer[index + 2] = b;
+    spectrogramBuffer[index + 3] = 255;
+  }
+
+  // Update the texture with the new buffer data
+  spectrogramTexture.baseTexture.update(spectrogramBuffer, canvasWidth, canvasHeight);
+}
+
+function resizeCanvas() {
+  var newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 1;
+  let newWidth = document.getElementById("SpectrumDiv").offsetWidth;
+  // Update the application renderer dimensions (this will resize the canvas)
+  app.renderer.resize(newWidth, newHeight);
+
+  // Update global variables with the new dimensions
+  canvasWidth = newWidth;
+  canvasHeight = newHeight;
+
+  // Recreate the spectrogram buffer to match the new size
+  spectrogramBufferRaw = new Float32Array(newWidth * newHeight);
+  spectrogramBuffer = new Uint8Array(newWidth * newHeight * 4); // 4 for RGBA
+
+  // Recreate the texture to match the new size
+  spectrogramTexture = PIXI.Texture.fromBuffer(spectrogramBuffer, newWidth, newHeight);
+
+  // Update the spectrogram sprite with the new texture
+  spectrogramSprite.texture = spectrogramTexture;
+}
+
+// Resize spectrogram when the browser is resized
+document.addEventListener('DOMContentLoaded', function() {
+  resizeCanvas();
+});
+addEventListener("resize", (event) => { resizeCanvas() });
