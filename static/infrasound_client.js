@@ -280,6 +280,7 @@ function setupEventListener() {
         times_buffer.push(new_timestamp);
         index_buffer.push(new_index);
         number_of_new_measurements += 1;
+        
         if (number_of_new_measurements > 10) {
           updateCharts();
           number_of_new_measurements = 0;
@@ -413,6 +414,7 @@ function computeTotalDBA(frequencies, spectrum) {
   // return 10 * Math.log10(dba_spectrum.reduce((sum, value) => sum + 10 ** (value / 10), 0));
 }
 
+let currentRenderMode = 0;
 function handleAmplitudeUnitSwitch(radio) {
   const choice = radio.id;
   switch (choice) {
@@ -432,6 +434,7 @@ function handleAmplitudeUnitSwitch(radio) {
       computeSpectrumFromSquaredMagnitudes = computeRMSSpectrum;
 
       chartSpectrum.yAxis[0].axisTitle.textStr = "Amplitude [Pa]";
+      currentRenderMode = 0;
 
       break;
     }
@@ -450,6 +453,7 @@ function handleAmplitudeUnitSwitch(radio) {
       computeTotalNoise = computeTotalSPL;
       computeSpectrumFromSquaredMagnitudes = computeSPLSpectrum;
       chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(SPL)]";
+      currentRenderMode = 1;
       break;
     }
     case "useDbA": {
@@ -467,15 +471,39 @@ function handleAmplitudeUnitSwitch(radio) {
       computeTotalNoise = computeTotalDBA;
       computeSpectrumFromSquaredMagnitudes = computeDBASpectrum;
       chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(A)]";
-      //todo
+      currentRenderMode = 2;
       break;
     }
     default: {
       console.log("WARNING: got unexpected choice for amplitude unit", choice);
     }
   }
-  // Reset canvas
-  resizeCanvas();
+}
+
+class RingBufferTexture {
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    this.data = new Float32Array(width*height);
+    this.columnMax = new Float32Array(width);
+    this.columnMin = new Float32Array(width);
+    this.index = 0;
+  }
+  // TODO continue here
+}
+
+function compileShader(gl, source, type) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+
+  if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)){
+    return shader;
+  } else {
+    console.error("Error compiling shader:", gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
 }
 
 // Constants for spectrogram dimensions
@@ -483,16 +511,170 @@ let canvasWidth = 800; // Number of time steps (X-axis)
 const fft_window = 2 ** document.getElementById("spectrumRange").value;
 let canvasHeight = fft_window / 2 - 1; // Number of frequency bins (Y-axis) except for the constant (first) frequency
 
-// Set up Pixi.js application
-const app = new PIXI.Application({
-  width: canvasWidth,
-  height: canvasHeight,
-  backgroundColor: 0x000000, // Black background
-  resolution: self.devicePixelRatio || 1,
-  autoDensity: true,
-});
+// create webgl canvas
+const canvas = document.createElement("canvas");
+document.getElementById("SpectrumDiv").appendChild(canvas);
+// get webgl context
+const gl = canvas.getContext("webgl2");
 
-document.getElementById("SpectrumDiv").appendChild(app.view);
+let texture = null;
+let ringbuffer = null;
+
+function initWebGLSpectrogramogram() {
+  if (!gl) {
+    console.log("WebGL is not supported - drawing spectrogram not possible.");
+    return;
+  }
+  ringbuffer = RingBuffer();
+  // Create shader program
+  const vertexShaderSource = `
+in vec2 aPosition;
+
+void main() {
+  gl_position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+  const fragmentShaderSource = `
+#version 300 es
+precision highp float;
+
+// Ringbuffer data
+uniform sampler2D uTexture;
+// Ringbufer index
+uniform int uBufferIndex;
+// Render mode for the spectrogram
+uniform int uRenderMode;
+// minimum and maximum value for normalization
+uniform float uMinValue;
+uniform float uMaxValue;
+
+// output color
+out vec4 fragColor;
+
+// function to compute SPL from input value
+float computeSPL(float value) {
+  const float sqrt_2 = 1.41421356237;
+  const float p_ref = 20e-6; // Reference preassure for SPL
+  return 20.0 * log(value / sqrt_2 / p_ref) / log(10.0);
+}
+
+// Function for A-weighting
+float AWeighting(float f) {
+  const float c1 = 12200.0 * 12200.0;
+  const float c2 = 20.6 * 20.6;
+  const float c3 = 107.7 * 107.7;
+  const float c4 = 737.9 * 737.9;
+
+  float f2 = f * f;
+  float f4 = f2 * f2;
+
+  // Calculate A-weighting in linear scale
+  float numerator = c1 * f4;
+  float denominator = (f2 + c2) * sqrt((f2 + c3) * (f2 + c4)) * (f2 + c1);
+  
+  // A-weighting and convert to dB
+  return 20.0 * log(numerator / denominator) / log(10.0) + 2.0; // A-weighting has a +2.0 dB offset
+}
+
+// Function to compute dBA
+float computeDBA(float value, float frequency) {
+  float splValue = computeSPL(value);
+  float aWeight = AWeighting(frequency);
+  return splValue + aWeight;
+}
+
+// Functon to map a normalized value using a heatmap
+vec3 heatmapColor(float value) {
+    // Ensure value is clamped between 0 and 1
+    value = clamp(value, 0.0, 1.0);
+    
+    vec3 color;
+
+    // Define the heatmap colors with values between 0 and 1
+    if (value <= 0.5) {
+        color = vec3(0.0, value * 2.0, 1.0); // Gradient from blue (0.0) to cyan (0.5)
+    } else {
+        color = vec3((value - 0.5) * 2.0, 1.0, 1.0 - (value - 0.5) * 2.0); // Gradient from cyan (0.5) to yellow (0.75) to red (1.0)
+    }
+    
+    return color;
+}
+
+void main() {
+  // Calculate index in the ringbuffer based on fragment position
+  int u_int = uBufferIndex + gl_FragCoord.x;
+  u_int = (u + uOffset) % textureSize(uTexture, 0).x;
+  float u = u_int / float(textureSize(uTexture, 0).x);
+  float v = gl_FragCoord.y / float(textureSize(uTexture, 0).y);
+  float frequency = v * 25.0;  // Assumes frequencies betwen 0 and 25 hz in the spectrogram
+  // load texel coordinate for the current position
+  float value = texture(uTexture, aTexCoord).r
+  
+  // Apply render mode transform
+  if (uRenderMode == 1) {
+    value = computeSPL(value);
+  } else if (uRenderMode == 2) {
+    value = computeDBA(value, frequency);
+  }
+  
+  // Normalize spectrogram to [0, 1]
+  value = (value - uMinValue) / (uMaxValue - uMinValue);
+  // get color
+  vec3 color = heatmapColor(value);
+  fragColor = vec4(color, 1.0);
+}
+`;
+  const vertexShader = compileShader(gl, vertexShaderSource, gl.VERTEX_SHADER);
+  const fragmentShader = compileShader(gl, fragmentShaderSource, gl.FRAGMENT_SHADER);
+  const shaderProgram = gl.createProgram();
+  gl.attachShader(shaderProgram, vertexShader);
+  gl.attachShader(shaderProgram, fragmentShader);
+  gl.linkProgram(shaderProgram);
+
+  //check if linking program was successful
+  if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+    console.error("Error linking program:", gl.getProgramInfoLog(shaderProgram));
+  }
+  // create a rectangle
+  const positionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  const positions = new Float32Array([
+    -1, -1,
+    1, -1,
+    -1, 1,
+    -1, 1,
+    1, -1,
+    1, 1
+  ]);
+  gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+  // Set up attribute for vertex positions
+  const positionLocation = gl.getAttribLocation(shaderProgram, 'aPosition');
+  gl.enableVertexAttribArray(positionLocation);
+  gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+  // create texture
+  texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, ringbuffer.width, ringbuffer.height, 0, gl.RED, gl.FLOAT, ringbuffer.data)
+}
+
+initWebGLSpectrogramogram();
+
+function renderSpectrum() {
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(shaderProgram);
+
+  // set uniforms
+  gl.uniform1i(getAttribLocation(shaderProgram, 'uBufferIndex'), ringbuffer.offset);
+  gl.uniform1i(getAttribLocation(shaderProgram, 'uRenderMode'), currentRenderMode);
+  gl.uniform1f(getAttribLocation(shaderProgram, 'uMinValue'), ringbuffer.minVal);
+  gl.uniform1f(getAttribLocation(shaderProgram, 'uMaxValue'), ringbuffer.maxVal);
+  // bind texture
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texture)
+  gl.drawArrays(gl.TRIANGLES, 0, 3); // Replace with your draw call
+}
 
 // Create a texture to display the spectrogram
 let spectrogramTexture = PIXI.Texture.fromBuffer(
