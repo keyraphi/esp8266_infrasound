@@ -258,7 +258,7 @@ function setupEventListener() {
         // console.log("measurement event", e.data);
         message = e.data.split(";");
         if (message.length != 2) {
-          console.log("ERROR: message length is", message.length);
+          console.log("ERROR: message length is expected to be 2, was:", message.length);
           return;
         }
         const index_string = message[0];
