@@ -1,5 +1,6 @@
 let start_timestamp = 0;
 const ms_between_measurements = 20;
+const spectrumUpdateFrequency = 10;
 
 let number_of_new_measurements = 0;
 
@@ -194,11 +195,15 @@ function updateCharts() {
     const hz = (i * 50.0) / fft_time_sequence.length;
     frequencies[i] = hz;
   }
+  updateSpectrogram(
+    spectrum,
+    times_buffer[times_buffer.length - 1],
+    spectrumUpdateFrequency * 50,
+  );
+
   scaled_spectrum = computeSpectrumFromSquaredMagnitudes(frequencies, spectrum);
   totalNoise = computeTotalNoise(frequencies, spectrum);
   setTotalNoise(totalNoise);
-
-  updateSpectrogram(scaled_spectrum.slice(1));
 
   const spectrumChartData = [];
   for (let i = 0; i < scaled_spectrum.length; i++) {
@@ -258,7 +263,10 @@ function setupEventListener() {
         // console.log("measurement event", e.data);
         message = e.data.split(";");
         if (message.length != 2) {
-          console.log("ERROR: message length is expected to be 2, was:", message.length);
+          console.log(
+            "ERROR: message length is expected to be 2, was:",
+            message.length,
+          );
           return;
         }
         const index_string = message[0];
@@ -280,8 +288,8 @@ function setupEventListener() {
         times_buffer.push(new_timestamp);
         index_buffer.push(new_index);
         number_of_new_measurements += 1;
-        
-        if (number_of_new_measurements > 10) {
+
+        if (number_of_new_measurements > spectrumUpdateFrequency) {
           updateCharts();
           number_of_new_measurements = 0;
         }
@@ -312,11 +320,12 @@ document.getElementById("SpectrumRangeIndicator").innerHTML =
   " samples)";
 document.getElementById("spectrumRange").oninput = function () {
   const val = 2 ** document.getElementById("spectrumRange").value;
-  cleanup_pfft();
-  initialize_pfft(val);
   document.getElementById("SpectrumRangeIndicator").innerHTML =
     "Spektrum Analyse Dauer: " + val / 50.0 + " seconds (" + val + " samples)";
   resizeCanvas();
+
+  cleanup_pfft();
+  initialize_pfft(val);
 };
 
 // By default use linear spectrum and hide line chart
@@ -397,7 +406,7 @@ function computeDBASpectrum(frequencies, spectrum) {
   const aWeightings = aWeightingCache[frequencies];
 
   for (let i = 0; i < spectrum.length; i++) {
-    result_spectrum[i] = result_spectrum[i] + aWeighting(i);
+    result_spectrum[i] = result_spectrum[i] + aWeightings[i];
   }
   return result_spectrum;
 }
@@ -481,15 +490,155 @@ function handleAmplitudeUnitSwitch(radio) {
 }
 
 class RingBufferTexture {
-  constructor(width, height) {
+  constructor(glctx, width, height) {
+    this.gl = glctx;
     this.width = width;
     this.height = height;
-    this.data = new Float32Array(width*height);
+    this.texture = this.gl.createTexture();
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+
+    // Set texture parameters to avoid using mipmaps
+    this.gl.texParameteri(
+      this.gl.TEXTURE_2D,
+      this.gl.TEXTURE_MIN_FILTER,
+      this.gl.NEAREST,
+    );
+    this.gl.texParameteri(
+      this.gl.TEXTURE_2D,
+      this.gl.TEXTURE_MAG_FILTER,
+      this.gl.NEAREST,
+    );
+    this.gl.texParameteri(
+      this.gl.TEXTURE_2D,
+      this.gl.TEXTURE_WRAP_S,
+      this.gl.CLAMP_TO_EDGE,
+    );
+    this.gl.texParameteri(
+      this.gl.TEXTURE_2D,
+      this.gl.TEXTURE_WRAP_T,
+      this.gl.CLAMP_TO_EDGE,
+    );
+
+    // initialize the texture with zeros
+    const data = new Float32Array(width * height);
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      this.gl.R32F,
+      this.width,
+      this.height,
+      0,
+      this.gl.RED,
+      this.gl.FLOAT,
+      data,
+    );
     this.columnMax = new Float32Array(width);
     this.columnMin = new Float32Array(width);
+    this.columnMaxIdx = new Int32Array(width);
+    this.columnMinIdx = new Int32Array(width);
+    this.max = Number.MIN_VALUE;
+    this.min = Number.MAX_VALUE;
+    this.maxIdx = -1;
+    this.minIdx = -1;
     this.index = 0;
   }
-  // TODO continue here
+
+  _positiveMod(a, b) {
+    b = Math.abs(b);
+    let remainder = a % b;
+    if (remainder < 0) {
+      remainder += b;
+    }
+    return remainder;
+  }
+
+  addColumn(newColumn) {
+    this.index = this._positiveMod(this.index - 1, this.width);
+    // Update the texture with the new column
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    this.gl.texSubImage2D(
+      this.gl.TEXTURE_2D,
+      0, // level
+      this.index, // x-offset
+      0, // y-offset
+      1, // width of uploaded column
+      this.height, // height of column
+      this.gl.RED, // format
+      this.gl.FLOAT, // type
+      newColumn, // data
+    );
+    // update the minimum and maximum for the new column
+    for (let i = 0; i < newColumn.length; i++) {
+      if (newColumn[i] > this.columnMax[this.index]) {
+        this.columnMax[this.index] = newColumn[i];
+        this.columnMaxIdx[this.index] = i;
+      } else if (newColumn[i] < this.columnMin[this.index]) {
+        this.columnMin[this.index] = newColumn[i];
+        this.columnMinIdx[this.index] = i;
+      }
+    }
+    // Make sure that the max or min value are invalidated if the ringbuffer is overwritten
+    // at the place of the old max or min value.
+    const computeGlobalMinMax =
+      this.maxIdx == this.index || this.minIdx == this.index || this.minIdx == -1 || this.maxIdx == -1;
+    if (this.maxIdx == this.index) {
+      this.max = Number.MIN_VALUE;
+    }
+    if (this.minIdx == this.index) {
+      this.min = Number.MAX_VALUE;
+    }
+    // update the total minimum and maximum
+    if (computeGlobalMinMax) {
+      for (let i = 0; i < this.columnMax.length; i++) {
+        if (this.columnMax[i] > this.max) {
+          this.max = this.columnMax[i];
+          this.maxIdx = i;
+        } else if (this.columnMin[i] < this.min) {
+          this.min = this.columnMin[i];
+          this.minIdx = i;
+        }
+      }
+    } else {
+      if (this.columnMaxIdx[this.index] > this.max) {
+        this.max = this.columnMaxIdx[this.index];
+        this.maxIdx = this.index;
+      } else if (this.columnMin[this.index] < this.min) {
+        this.min = this.columnMin[this.index];
+        this.minIdx = this.index;
+      }
+    }
+  }
+
+  resize(newWidth, newHeight) {
+    this.width = newWidth;
+    this.height = newHeight;
+    // clear texture and allocate new texture memory if necessary
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    const data = new Float32Array(this.width * this.height);
+    this.gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.R32F,
+      this.width,
+      this.height,
+      0,
+      gl.RED,
+      gl.FLOAT,
+      data,
+    );
+    // Reset the min and max values and indices
+    this.columnMax = new Float32Array(this.width);
+    this.columnMin = new Float32Array(this.width);
+    this.columnMaxIdx = new Int32Array(this.width);
+    this.columnMinIdx = new Int32Array(this.width);
+    this.max = Number.MIN_VALUE;
+    this.min = Number.MAX_VALUE;
+    this.maxIdx = -1;
+    this.minIdx = -1;
+    // reset ringbuffer position
+    this.index = 0;
+    console.log("Resized ringbuffer to", this.width, this.height);
+  }
 }
 
 function compileShader(gl, source, type) {
@@ -497,7 +646,7 @@ function compileShader(gl, source, type) {
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
 
-  if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)){
+  if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
     return shader;
   } else {
     console.error("Error compiling shader:", gl.getShaderInfoLog(shader));
@@ -512,41 +661,39 @@ const fft_window = 2 ** document.getElementById("spectrumRange").value;
 let canvasHeight = fft_window / 2 - 1; // Number of frequency bins (Y-axis) except for the constant (first) frequency
 
 // create webgl canvas
-const canvas = document.createElement("canvas");
-document.getElementById("SpectrumDiv").appendChild(canvas);
+const canvas = document.getElementById("webglCanvas");
 // get webgl context
 const gl = canvas.getContext("webgl2");
 
-let texture = null;
 let ringbuffer = null;
+let shaderProgram = null;
 
 function initWebGLSpectrogramogram() {
   if (!gl) {
-    console.log("WebGL is not supported - drawing spectrogram not possible.");
+    console.warn("WebGL is not supported - drawing spectrogram not possible.");
     return;
   }
-  ringbuffer = RingBuffer();
   // Create shader program
-  const vertexShaderSource = `
+  const vertexShaderSource = `#version 300 es
+precision highp float;
 in vec2 aPosition;
 
 void main() {
-  gl_position = vec4(aPosition, 0.0, 1.0);
+  gl_Position = vec4(aPosition, 0.0, 1.0);
 }
 `;
-  const fragmentShaderSource = `
-#version 300 es
+  const fragmentShaderSource = `#version 300 es
 precision highp float;
 
 // Ringbuffer data
 uniform sampler2D uTexture;
-// Ringbufer index
-uniform int uBufferIndex;
 // Render mode for the spectrogram
 uniform int uRenderMode;
 // minimum and maximum value for normalization
 uniform float uMinValue;
 uniform float uMaxValue;
+uniform float uMinFrequency;
+uniform float uMaxFrequency;
 
 // output color
 out vec4 fragColor;
@@ -583,7 +730,7 @@ float computeDBA(float value, float frequency) {
   return splValue + aWeight;
 }
 
-// Functon to map a normalized value using a heatmap
+// Function to map a normalized value using a heatmap
 vec3 heatmapColor(float value) {
     // Ensure value is clamped between 0 and 1
     value = clamp(value, 0.0, 1.0);
@@ -602,209 +749,229 @@ vec3 heatmapColor(float value) {
 
 void main() {
   // Calculate index in the ringbuffer based on fragment position
-  int u_int = uBufferIndex + gl_FragCoord.x;
-  u_int = (u + uOffset) % textureSize(uTexture, 0).x;
-  float u = u_int / float(textureSize(uTexture, 0).x);
-  float v = gl_FragCoord.y / float(textureSize(uTexture, 0).y);
-  float frequency = v * 25.0;  // Assumes frequencies betwen 0 and 25 hz in the spectrogram
+  vec2 shape = vec2(textureSize(uTexture, 0).xy);
+  vec2 fragCoord = gl_FragCoord.xy;
+  fragCoord.y = shape.y - fragCoord.y;
+  vec2 texCoord = fragCoord / shape;
+  float frequency_steps = 25.0 / (shape.y + 1.0);
+  float frequency = frequency_steps * (1.0 + fragCoord.y);
+  // float frequency = texCoord.y * 25.0;  // Assumes frequencies between 0 and 25 hz in the spectrogram
+  float maxValue = uMaxValue;
+  float minValue = uMinValue;
+
   // load texel coordinate for the current position
-  float value = texture(uTexture, aTexCoord).r
+  float value = texture(uTexture, texCoord).r;
   
   // Apply render mode transform
   if (uRenderMode == 1) {
     value = computeSPL(value);
+    maxValue = computeSPL(maxValue);
+    minValue = computeSPL(minValue);
+    value = clamp(value, minValue, maxValue);
   } else if (uRenderMode == 2) {
     value = computeDBA(value, frequency);
+    maxValue = computeDBA(maxValue, uMaxFrequency);
+    minValue = computeDBA(minValue, uMaxFrequency);
   }
   
   // Normalize spectrogram to [0, 1]
-  value = (value - uMinValue) / (uMaxValue - uMinValue);
+  value = (value - minValue) / (maxValue - minValue);
   // get color
   vec3 color = heatmapColor(value);
   fragColor = vec4(color, 1.0);
 }
 `;
   const vertexShader = compileShader(gl, vertexShaderSource, gl.VERTEX_SHADER);
-  const fragmentShader = compileShader(gl, fragmentShaderSource, gl.FRAGMENT_SHADER);
-  const shaderProgram = gl.createProgram();
+  const fragmentShader = compileShader(
+    gl,
+    fragmentShaderSource,
+    gl.FRAGMENT_SHADER,
+  );
+  shaderProgram = gl.createProgram();
   gl.attachShader(shaderProgram, vertexShader);
   gl.attachShader(shaderProgram, fragmentShader);
   gl.linkProgram(shaderProgram);
 
   //check if linking program was successful
   if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-    console.error("Error linking program:", gl.getProgramInfoLog(shaderProgram));
+    console.error(
+      "Error linking program:",
+      gl.getProgramInfoLog(shaderProgram),
+    );
   }
   // create a rectangle
   const positionBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
   const positions = new Float32Array([
-    -1, -1,
-    1, -1,
-    -1, 1,
-    -1, 1,
-    1, -1,
-    1, 1
+    -1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1,
   ]);
   gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
 
   // Set up attribute for vertex positions
-  const positionLocation = gl.getAttribLocation(shaderProgram, 'aPosition');
+  const positionLocation = gl.getAttribLocation(shaderProgram, "aPosition");
   gl.enableVertexAttribArray(positionLocation);
   gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
-  // create texture
-  texture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, ringbuffer.width, ringbuffer.height, 0, gl.RED, gl.FLOAT, ringbuffer.data)
+  // create ringbuffer texture
+  const width = document.getElementById("SpectrogramDiv").offsetWidth;
+  const height = 2 ** document.getElementById("spectrumRange").value / 2 - 2;
+  ringbuffer = new RingBufferTexture(gl, width, height);
 }
 
 initWebGLSpectrogramogram();
 
-function renderSpectrum() {
+function updateSpectrogram(newSpectrum, currentTime, updateIntervals) {
+  if (!gl) {
+    console.warn("No webgl available - I won't update the spectrogram");
+    return;
+  }
+  // The first entry in the new spectrum is just a constant (frequency = 0).
+  // We remove it here and don't include it in the spectrogram
+  newSpectrum = newSpectrum.slice(1);
+  ringbuffer.addColumn(newSpectrum);
+  renderSpectrogram();
+
+  updateSpectrogramLabels(currentTime, updateIntervals);
+}
+
+function updateSpectrogramLabels(currentTime, updateIntervals) {
+  const labelCanvas = document.getElementById("labelCanvas");
+  const ctx = labelCanvas.getContext("2d");
+  ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
+
+  // draw grid lines
+  const numYLabels = Math.floor(labelCanvas.height / 50);
+  const numXLabels = labelCanvas.width / 100;
+  for (let i = 0; i <= numYLabels; i++) {
+    const y = (i / numYLabels) * labelCanvas.height;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(labelCanvas.width, y);
+    ctx.strokeStyle = "rgba(211, 211, 211, 0.3)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  for (let i = 0; i <= numXLabels; i++) {
+    const x = labelCanvas.width * (1 - i / numXLabels);
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, labelCanvas.height);
+    ctx.strokeStyle = "rgba(211, 211, 211, 0.3)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // draw y-axis labels (frequencies)
+  const freqMin = 0;
+  const freqMax = 25;
+  for (let i = 0; i <= numYLabels; i++) {
+    const y = (i / numYLabels) * labelCanvas.height;
+    const freq = freqMin + (i / numYLabels) * (freqMax - freqMin);
+    ctx.fillStyle = "white";
+    ctx.font = "14px Arial";
+    ctx.fillText(`${freq.toFixed(1)} Hz`, 10, y);
+  }
+
+  // draw x-axis labels (time)
+  const startTime = new Date(currentTime);
+  const endTime = new Date(
+    startTime.getTime() - updateIntervals * labelCanvas.width,
+  );
+  for (let i = 0; i <= numXLabels; i++) {
+    const x = labelCanvas.width * (1 - i / numXLabels);
+    const time = new Date(
+      startTime.getTime() -
+        (i * (startTime.getTime() - endTime.getTime())) / numXLabels,
+    );
+    const timeString = time.toLocaleTimeString("de-DE");
+    ctx.fillStyle = "white";
+    ctx.font = "14px Arial";
+    ctx.fillText(timeString, x, labelCanvas.height - 10);
+  }
+}
+
+function renderSpectrogram() {
+  if (!gl) {
+    console.warn("Can not render Spectrum - webgl not supported");
+    return;
+  }
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.useProgram(shaderProgram);
 
   // set uniforms
-  gl.uniform1i(getAttribLocation(shaderProgram, 'uBufferIndex'), ringbuffer.offset);
-  gl.uniform1i(getAttribLocation(shaderProgram, 'uRenderMode'), currentRenderMode);
-  gl.uniform1f(getAttribLocation(shaderProgram, 'uMinValue'), ringbuffer.minVal);
-  gl.uniform1f(getAttribLocation(shaderProgram, 'uMaxValue'), ringbuffer.maxVal);
+  gl.uniform1i(
+    gl.getUniformLocation(shaderProgram, "uRenderMode"),
+    currentRenderMode,
+  );
+  gl.uniform1f(
+    gl.getUniformLocation(shaderProgram, "uMinValue"),
+    ringbuffer.min,
+  );
+  gl.uniform1f(
+    gl.getUniformLocation(shaderProgram, "uMaxValue"),
+    ringbuffer.max,
+  );
+  gl.uniform1f(
+    gl.getUniformLocation(shaderProgram, "uMinFrequency"),
+    ringbuffer.min,
+  );
+  gl.uniform1f(
+    gl.getUniformLocation(shaderProgram, "uMaxFrequency"),
+    ringbuffer.min,
+  );
   // bind texture
   gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, texture)
-  gl.drawArrays(gl.TRIANGLES, 0, 3); // Replace with your draw call
-}
-
-// Create a texture to display the spectrogram
-let spectrogramTexture = PIXI.Texture.fromBuffer(
-  new Uint8Array(canvasWidth * canvasHeight * 4),
-  canvasWidth,
-  canvasHeight,
-);
-const spectrogramSprite = new PIXI.Sprite(spectrogramTexture);
-app.stage.addChild(spectrogramSprite);
-
-// Spectrogram buffer (to keep track of data over time)
-let spectrogramBufferRaw = new Float32Array(canvasWidth * canvasHeight);
-let spectrogramBuffer = new Uint8Array(canvasWidth * canvasHeight * 4); // 4 for RGBA
-
-// Precompute heatmap table for all intensity values (0–255)
-const heatmapTable = new Uint8Array(256 * 3); // 3 values (r, g, b) per intensity
-
-for (let i = 0; i < 256; i++) {
-  let r = 0,
-    g = 0,
-    b = 0;
-
-  if (i <= 127) {
-    g = Math.floor((i / 127) * 255);
-    b = 255;
-  } else if (i <= 191) {
-    g = 255;
-    b = Math.floor(255 - ((i - 127) / 64) * 255);
-  } else {
-    r = Math.floor(((i - 191) / 64) * 255);
-    g = Math.floor(255 - ((i - 191) / 64) * 255);
-  }
-
-  heatmapTable[i * 3] = r;
-  heatmapTable[i * 3 + 1] = g;
-  heatmapTable[i * 3 + 2] = b;
-}
-
-// Function to update the spectrogram with heatmap colors
-function updateSpectrogram(newSpectrum) {
-  // Shift the current spectrogram buffer to the left
-  for (let y = 0; y < canvasHeight; y++) {
-    const rowStartIdx = y * canvasWidth;
-    // move row one column to the left and drop the first element
-    spectrogramBufferRaw.set(
-      spectrogramBufferRaw.subarray(rowStartIdx + 1, rowStartIdx + canvasWidth),
-      rowStartIdx,
-    );
-  }
-
-  // Insert the new spectrum into the rightmost column with heatmap colors
-  for (let y = 0; y < newSpectrum.length; y++) {
-    const index = y * canvasWidth + (canvasWidth - 1);
-    spectrogramBufferRaw[index] = newSpectrum[y];
-  }
-
-  // get value range
-  let maxVal = spectrogramBufferRaw.reduce(
-    (max, value) => Math.max(max, value),
-    Number.MIN_VALUE,
-  );
-  let minVal = spectrogramBufferRaw.reduce(
-    (min, value) => Math.min(min, value),
-    Number.MAX_VALUE,
-  );
-
-  console.log("DEBUG min:", minVal, "max:", maxVal);
-  if (minVal === Number.NEGATIVE_INFINITY) {
-    console.log(newSpectrum);
-  }
-  if (maxVal == minVal) {
-    maxVal = 1;
-    minVal = 0;
-  }
-
-  // normalizedSpectrum
-  const normalizedSpectrum = spectrogramBufferRaw.map((value) =>
-    Math.floor(((value - minVal) / (maxVal - minVal)) * 255),
-  );
-  // apply heatmap
-  for (let i = 0; i < normalizedSpectrum.length; i++) {
-    const intensity = normalizedSpectrum[i];
-    const index = i * 4;
-    spectrogramBuffer[index] = heatmapTable[intensity * 3];
-    spectrogramBuffer[index + 1] = heatmapTable[intensity * 3 + 1];
-    spectrogramBuffer[index + 2] = heatmapTable[intensity * 3 + 2];
-    spectrogramBuffer[index + 3] = 255;
-  }
-
-  // Update the texture with the new buffer data
-  spectrogramTexture.baseTexture.update(
-    spectrogramBuffer,
-    canvasWidth,
-    canvasHeight,
-  );
+  gl.bindTexture(gl.TEXTURE_2D, ringbuffer.texture);
+  gl.drawArrays(gl.TRIANGLES, 0, 6); // Replace with your draw call
 }
 
 function resizeCanvas() {
-  const newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 1;
-  const newWidth = document.getElementById("SpectrumDiv").offsetWidth;
-  // Update the application renderer dimensions (this will resize the canvas)
-  app.renderer.resize(newWidth, newHeight);
-
-  // Update global variables with the new dimensions
-  canvasWidth = newWidth;
-  canvasHeight = newHeight;
-
-  // clean up old texture
-  if (spectrogramTexture) {
-    spectrogramTexture.destroy(true);
+  if (!gl) {
+    console.warn("webgl not available");
+    return;
   }
-  // Recreate the spectrogram buffer to match the new size
-  spectrogramBufferRaw = new Float32Array(newWidth * newHeight);
-  spectrogramBuffer = new Uint8Array(newWidth * newHeight * 4); // 4 for RGBA
+  const newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 2;
+  const container = document.getElementById("SpectrogramDiv");
+  const newWidth = container.offsetWidth;
 
-  // Recreate the texture to match the new size
-  spectrogramTexture = PIXI.Texture.fromBuffer(
-    spectrogramBuffer,
-    newWidth,
-    newHeight,
-  );
+  // get canvases
+  const webglCanvas = document.getElementById("webglCanvas");
+  const labelCanvas = document.getElementById("labelCanvas");
 
-  // Update the spectrogram sprite with the new texture
-  spectrogramSprite.texture = spectrogramTexture;
+  // set new canvas sizes
+  webglCanvas.width = labelCanvas.width = newWidth;
+  webglCanvas.height = labelCanvas.height = newHeight;
+
+  ringbuffer.resize(newWidth, newHeight);
+  renderSpectrogram();
+
+  // set height of parent div
+  container.style.height = `${newHeight}px`;
+
+  gl.viewport(0, 0, newWidth, newHeight);
 }
 
 // Resize spectrogram when the browser is resized
 document.addEventListener("DOMContentLoaded", function () {
   resizeCanvas();
 });
+
 addEventListener("resize", (event) => {
   resizeCanvas();
 });
+
+// DEBUG:
+setInterval(() => {
+  const newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 1;
+  const newData = new Float32Array(newHeight).map(() => Math.random());
+  // const frequencies = new Float32Array(
+  //   Array.from({ length: newHeight }, (_, i) => (i * 25) / newHeight),
+  // );
+  // console.log(
+  //   "Aweighting for frequency",
+  //   frequencies[1],
+  //   AWeighting(frequencies[1]),
+  // );
+
+  updateSpectrogram(newData, Date(), spectrumUpdateFrequency * 50);
+}, 50 * spectrumUpdateFrequency);
