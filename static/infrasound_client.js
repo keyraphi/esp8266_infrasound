@@ -532,8 +532,8 @@ class RingBufferTexture {
       this.gl.FLOAT,
       data,
     );
-    this.columnMax = new Float32Array(width);
-    this.columnMin = new Float32Array(width);
+    this.columnMax = new Float32Array(width).fill(Number.NEGATIVE_INFINITY);
+    this.columnMin = new Float32Array(width).fill(Number.POSITIVE_INFINITY);
     this.columnMaxIdx = new Int32Array(width);
     this.columnMinIdx = new Int32Array(width);
     this.max = Number.MIN_VALUE;
@@ -599,8 +599,8 @@ class RingBufferTexture {
         }
       }
     } else {
-      if (this.columnMaxIdx[this.index] > this.max) {
-        this.max = this.columnMaxIdx[this.index];
+      if (this.columnMax[this.index] > this.max) {
+        this.max = this.columnMax[this.index];
         this.maxIdx = this.index;
       } else if (this.columnMin[this.index] < this.min) {
         this.min = this.columnMin[this.index];
@@ -627,8 +627,8 @@ class RingBufferTexture {
       data,
     );
     // Reset the min and max values and indices
-    this.columnMax = new Float32Array(this.width);
-    this.columnMin = new Float32Array(this.width);
+    this.columnMax = new Float32Array(this.width).fill(Number.NEGATIVE_INFINITY);
+    this.columnMin = new Float32Array(this.width).fill(Number.POSITIVE_INFINITY);
     this.columnMaxIdx = new Int32Array(this.width);
     this.columnMinIdx = new Int32Array(this.width);
     this.max = Number.MIN_VALUE;
@@ -730,21 +730,40 @@ float computeDBA(float value, float frequency) {
   return splValue + aWeight;
 }
 
-// Function to map a normalized value using a heatmap
+// Function to map a normalized value using a heatmap (inferno)
+// For reference colors see: https://www.kennethmoreland.com/color-advice/
 vec3 heatmapColor(float value) {
-    // Ensure value is clamped between 0 and 1
+    // Clamp value to the range [0, 1]
     value = clamp(value, 0.0, 1.0);
-    
-    vec3 color;
 
-    // Define the heatmap colors with values between 0 and 1
-    if (value <= 0.5) {
-        color = vec3(0.0, value * 2.0, 1.0); // Gradient from blue (0.0) to cyan (0.5)
-    } else {
-        color = vec3((value - 0.5) * 2.0, 1.0, 1.0 - (value - 0.5) * 2.0); // Gradient from cyan (0.5) to yellow (0.75) to red (1.0)
+    // Define the scalar values and corresponding colors from your table
+    const float scalars[8] = float[8](0.0, 0.142857142857143, 0.285714285714286, 0.428571428571429, 
+                                      0.571428571428571, 0.714285714285714, 0.857142857142857, 1.0);
+
+    const vec3 colors[8] = vec3[8](vec3(0, 0, 4),       // Scalar 0
+                                   vec3(40, 11, 84),    // Scalar 0.142857142857143
+                                   vec3(101, 21, 110),  // Scalar 0.285714285714286
+                                   vec3(159, 42, 99),   // Scalar 0.428571428571429
+                                   vec3(212, 72, 66),   // Scalar 0.571428571428571
+                                   vec3(245, 125, 21),  // Scalar 0.714285714285714
+                                   vec3(250, 193, 39),  // Scalar 0.857142857142857
+                                   vec3(252, 255, 164)  // Scalar 1
+                                  );
+
+    // Interpolate between the colors
+    vec3 color = colors[0]; // Default to the first color
+
+    for (int i = 0; i < 7; ++i) {
+        if (value >= scalars[i] && value <= scalars[i + 1]) {
+            // Calculate the interpolation factor
+            float factor = (value - scalars[i]) / (scalars[i + 1] - scalars[i]);
+            color = mix(colors[i], colors[i + 1], factor);
+            break;
+        }
     }
-    
-    return color;
+
+    // Normalize the color to the [0, 1] range by dividing by 255.0
+    return color / 255.0;
 }
 
 void main() {
@@ -767,11 +786,16 @@ void main() {
     value = computeSPL(value);
     maxValue = computeSPL(maxValue);
     minValue = computeSPL(minValue);
-    value = clamp(value, minValue, maxValue);
+    // Make sure min value is not -inf if an amplitude ever really gets 0
+    float save_min_value = max(minValue, -120.0);
+    value = clamp(value, save_min_value, maxValue);
   } else if (uRenderMode == 2) {
     value = computeDBA(value, frequency);
     maxValue = computeDBA(maxValue, uMaxFrequency);
     minValue = computeDBA(minValue, uMaxFrequency);
+    // Make sure min value is not -inf if an amplitude ever really gets 0
+    float save_min_value = max(minValue, -120.0);
+    value = clamp(value, save_min_value, maxValue);
   }
   
   // Normalize spectrogram to [0, 1]
@@ -842,12 +866,12 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
   // draw grid lines
   const numYLabels = Math.floor(labelCanvas.height / 50);
   const numXLabels = labelCanvas.width / 100;
-  for (let i = 0; i <= numYLabels; i++) {
-    const y = (i / numYLabels) * labelCanvas.height;
+  for (let i = 0; i <= numYLabels-1; i++) {
+    const y = ((0.5+i) / numYLabels) * labelCanvas.height;
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(labelCanvas.width, y);
-    ctx.strokeStyle = "rgba(211, 211, 211, 0.3)";
+    ctx.strokeStyle = "rgba(211, 211, 211, 0.5)";
     ctx.lineWidth = 1;
     ctx.stroke();
   }
@@ -856,17 +880,17 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, labelCanvas.height);
-    ctx.strokeStyle = "rgba(211, 211, 211, 0.3)";
+    ctx.strokeStyle = "rgba(211, 211, 211, 0.5)";
     ctx.lineWidth = 1;
     ctx.stroke();
   }
 
   // draw y-axis labels (frequencies)
-  const freqMin = 0;
+  const freqMin = 25 / labelCanvas.height;
   const freqMax = 25;
-  for (let i = 0; i <= numYLabels; i++) {
-    const y = (i / numYLabels) * labelCanvas.height;
-    const freq = freqMin + (i / numYLabels) * (freqMax - freqMin);
+  for (let i = 0; i <= numYLabels-1; i++) {
+    const y = ((0.5+i) / numYLabels) * labelCanvas.height;
+    const freq = freqMin + ((i+0.5) / numYLabels) * (freqMax - freqMin);
     ctx.fillStyle = "white";
     ctx.font = "14px Arial";
     ctx.fillText(`${freq.toFixed(1)} Hz`, 10, y);
@@ -911,13 +935,15 @@ function renderSpectrogram() {
     gl.getUniformLocation(shaderProgram, "uMaxValue"),
     ringbuffer.max,
   );
+  const minFrequency = (1 + ringbuffer.minIdx) / (ringbuffer.height + 1);
+  const maxFrequency = (1 + ringbuffer.maxIdx) / (ringbuffer.height + 1);
   gl.uniform1f(
     gl.getUniformLocation(shaderProgram, "uMinFrequency"),
-    ringbuffer.min,
+    minFrequency,
   );
   gl.uniform1f(
     gl.getUniformLocation(shaderProgram, "uMaxFrequency"),
-    ringbuffer.min,
+    maxFrequency,
   );
   // bind texture
   gl.activeTexture(gl.TEXTURE0);
@@ -948,7 +974,7 @@ function resizeCanvas() {
   // set height of parent div
   container.style.height = `${newHeight}px`;
 
-  gl.viewport(0, 0, newWidth, newHeight);
+  gl.viewport(0, 0, webglCanvas.width, webglCanvas.height);
 }
 
 // Resize spectrogram when the browser is resized
@@ -963,15 +989,8 @@ addEventListener("resize", (event) => {
 // DEBUG:
 setInterval(() => {
   const newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 1;
-  const newData = new Float32Array(newHeight).map(() => Math.random());
-  // const frequencies = new Float32Array(
-  //   Array.from({ length: newHeight }, (_, i) => (i * 25) / newHeight),
-  // );
-  // console.log(
-  //   "Aweighting for frequency",
-  //   frequencies[1],
-  //   AWeighting(frequencies[1]),
-  // );
+  //const newData = new Float32Array(newHeight).map(() => Math.random());
+  const newData = new Float32Array(newHeight).map((_, i) => 1+1e-3+Math.sin(5*2*Math.PI*i/newHeight) + Math.random()*0.2);
 
   updateSpectrogram(newData, Date(), spectrumUpdateFrequency * 50);
 }, 50 * spectrumUpdateFrequency);
