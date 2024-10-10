@@ -684,7 +684,7 @@ void sendMeasurementEvent(uint32_t measurement_idx, float measurement) {
 }
 
 void writeMeasurementFileBuffer() {
-  cout << "DEBUG: writing measurements" << endl;
+  cout << "Writing " << measurements_in_file_buffer << " measurements to SD Card" << endl;
   if (!openMeasurementFileAppending()) {
     return;
   }

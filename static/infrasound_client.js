@@ -8,7 +8,7 @@ let computeTotalNoise = null;
 let computeSpectrumFromSquaredMagnitudes = null;
 
 pfft_module = null;
-pffft().then(function (Module) {
+pffft().then(function(Module) {
   console.log("PFFFT Module initialized");
   pffft_module = Module;
 });
@@ -134,7 +134,7 @@ function fourier_transform(timeSequence) {
     dataHeap.byteOffset,
   );
 
-  const fft_squared_magnitudes = new Float32Array(
+  let fft_squared_magnitudes = new Float32Array(
     dataHeap.buffer,
     dataHeap.byteOffset,
     timeSequence.length,
@@ -165,7 +165,7 @@ function updateCharts() {
   // Update data in time chart
   chart_data_time = times_buffer.slice(-chartTimeSeriesDuration);
   chart_data_preassure = measurement_buffer.slice(-chartTimeSeriesDuration);
-  chart_data = chart_data_time.map(function (val, idx) {
+  chart_data = chart_data_time.map(function(val, idx) {
     return [val, chart_data_preassure[idx]];
   });
   chartTimeSeries.series[0].setData(chart_data, false, false, false);
@@ -190,7 +190,7 @@ function updateCharts() {
   }
 
   const spectrum = fourier_transform(fft_time_sequence);
-  const frequencies = Float32Array(spectrum.length);
+  const frequencies = new Float32Array(spectrum.length);
   for (let i = 0; i < spectrum.length; i++) {
     const hz = (i * 50.0) / fft_time_sequence.length;
     frequencies[i] = hz;
@@ -217,7 +217,7 @@ function updateCharts() {
 // load the start-timestamp
 const start_timestamp_request = new XMLHttpRequest();
 
-start_timestamp_request.onreadystatechange = function () {
+start_timestamp_request.onreadystatechange = function() {
   if (
     start_timestamp_request.readyState == XMLHttpRequest.DONE &&
     start_timestamp_request.status == 200
@@ -235,68 +235,68 @@ start_timestamp_request.send();
 function setupEventListener() {
   // setup event listener for new measurements
   console.log("setupEventListener");
-  if (!self.EventSource) {
-    console.log("Creating EventSource");
-    const source = new EventSource("/measurement_events");
+  console.log("Creating EventSource");
+  const source = new EventSource("/measurement_events");
 
-    source.addEventListener(
-      "open",
-      function (e) {
-        console.log("Events connected");
-      },
-      false,
-    );
+  source.addEventListener(
+    "open",
+    function(e) {
+      console.log("Events connected");
+    },
+    false,
+  );
 
-    source.addEventListener(
-      "error",
-      function (e) {
-        if (e.target.readyState != EventSource.OPEN) {
-          console.log("Events Disconnected");
-        }
-      },
-      false,
-    );
+  source.addEventListener(
+    "error",
+    function(e) {
+      if (e.target.readyState != EventSource.OPEN) {
+        console.log("Events Disconnected");
+      }
+    },
+    false,
+  );
 
-    source.addEventListener(
-      "measurement",
-      function (e) {
-        // console.log("measurement event", e.data);
-        message = e.data.split(";");
-        if (message.length != 2) {
-          console.log(
-            "ERROR: message length is expected to be 2, was:",
-            message.length,
-          );
-          return;
-        }
-        const index_string = message[0];
-        const meassurement_string = message[1];
+  console.log("Adding the event listener for measurement message");
+  console.log(source);
+  source.addEventListener(
+    "measurement",
+    function(e) {
+      // console.log("got measurement event", e.data);
+      message = e.data.split(";");
+      if (message.length != 2) {
+        console.log(
+          "ERROR: message length is expected to be 2, was:",
+          message.length,
+        );
+        return;
+      }
+      const index_string = message[0];
+      const meassurement_string = message[1];
 
-        const new_index = parseInt(index_string);
-        const new_measurement = parseFloat(meassurement_string);
-        measurement_buffer.push(new_measurement);
-        let new_timestamp;
-        if (times_buffer.length == 0) {
-          new_timestamp = start_timestamp + new_index * ms_between_measurements;
-        } else {
-          const start_idx = index_buffer[index_buffer.length - 1];
-          const time_since_start =
-            (new_index - start_idx) * ms_between_measurements;
-          new_timestamp =
-            times_buffer[times_buffer.length - 1] + time_since_start;
-        }
-        times_buffer.push(new_timestamp);
-        index_buffer.push(new_index);
-        number_of_new_measurements += 1;
+      const new_index = parseInt(index_string);
+      const new_measurement = parseFloat(meassurement_string);
+      measurement_buffer.push(new_measurement);
+      let new_timestamp;
+      if (times_buffer.length == 0) {
+        new_timestamp = start_timestamp + new_index * ms_between_measurements;
+      } else {
+        const start_idx = index_buffer[index_buffer.length - 1];
+        const time_since_start =
+          (new_index - start_idx) * ms_between_measurements;
+        new_timestamp =
+          times_buffer[times_buffer.length - 1] + time_since_start;
+      }
+      times_buffer.push(new_timestamp);
+      index_buffer.push(new_index);
+      number_of_new_measurements += 1;
 
-        if (number_of_new_measurements > spectrumUpdateFrequency) {
-          updateCharts();
-          number_of_new_measurements = 0;
-        }
-      },
-      false,
-    );
-  }
+      if (number_of_new_measurements > spectrumUpdateFrequency) {
+        updateCharts();
+        number_of_new_measurements = 0;
+      }
+    },
+    false,
+  );
 }
 
 // Time Series range
@@ -304,7 +304,7 @@ document.getElementById("timeSeriesRange").value = chartTimeSeriesDuration;
 document.getElementById("timeSeriesRangeIndicator").innerHTML =
   "Dargestellte Zeitspanne: " + chartTimeSeriesDuration / 50 + " seconds";
 // Slider for time duration
-document.getElementById("timeSeriesRange").oninput = function () {
+document.getElementById("timeSeriesRange").oninput = function() {
   const val = document.getElementById("timeSeriesRange").value;
   chartTimeSeriesDuration = val;
   document.getElementById("timeSeriesRangeIndicator").innerHTML =
@@ -318,7 +318,7 @@ document.getElementById("SpectrumRangeIndicator").innerHTML =
   " seconds (" +
   2 ** document.getElementById("spectrumRange").value +
   " samples)";
-document.getElementById("spectrumRange").oninput = function () {
+document.getElementById("spectrumRange").oninput = function() {
   const val = 2 ** document.getElementById("spectrumRange").value;
   document.getElementById("SpectrumRangeIndicator").innerHTML =
     "Spektrum Analyse Dauer: " + val / 50.0 + " seconds (" + val + " samples)";
@@ -694,6 +694,7 @@ uniform float uMinValue;
 uniform float uMaxValue;
 uniform float uMinFrequency;
 uniform float uMaxFrequency;
+uniform int uRingbufferIndex;
 
 // output color
 out vec4 fragColor;
@@ -770,8 +771,11 @@ void main() {
   // Calculate index in the ringbuffer based on fragment position
   vec2 shape = vec2(textureSize(uTexture, 0).xy);
   vec2 fragCoord = gl_FragCoord.xy;
+  
   fragCoord.y = shape.y - fragCoord.y;
+  fragCoord.x = (shape.x - fragCoord.x + float(uRingbufferIndex));
   vec2 texCoord = fragCoord / shape;
+  texCoord.x = texCoord.x - floor(texCoord.x);
   float frequency_steps = 25.0 / (shape.y + 1.0);
   float frequency = frequency_steps * (1.0 + fragCoord.y);
   // float frequency = texCoord.y * 25.0;  // Assumes frequencies between 0 and 25 hz in the spectrogram
@@ -781,25 +785,26 @@ void main() {
   // load texel coordinate for the current position
   float value = texture(uTexture, texCoord).r;
   
+  float save_min_value = minValue;
   // Apply render mode transform
   if (uRenderMode == 1) {
     value = computeSPL(value);
     maxValue = computeSPL(maxValue);
     minValue = computeSPL(minValue);
     // Make sure min value is not -inf if an amplitude ever really gets 0
-    float save_min_value = max(minValue, -120.0);
+    save_min_value = max(minValue, -120.0);
     value = clamp(value, save_min_value, maxValue);
   } else if (uRenderMode == 2) {
     value = computeDBA(value, frequency);
-    maxValue = computeDBA(maxValue, uMaxFrequency);
-    minValue = computeDBA(minValue, uMaxFrequency);
+    maxValue = computeDBA(maxValue, 24.9);
+    minValue = computeDBA(minValue, 0.1);
     // Make sure min value is not -inf if an amplitude ever really gets 0
-    float save_min_value = max(minValue, -120.0);
+    save_min_value = max(minValue, -120.0);
     value = clamp(value, save_min_value, maxValue);
   }
   
   // Normalize spectrogram to [0, 1]
-  value = (value - minValue) / (maxValue - minValue);
+  value = (value - save_min_value) / (maxValue - save_min_value);
   // get color
   vec3 color = heatmapColor(value);
   fragColor = vec4(color, 1.0);
@@ -866,8 +871,8 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
   // draw grid lines
   const numYLabels = Math.floor(labelCanvas.height / 50);
   const numXLabels = labelCanvas.width / 100;
-  for (let i = 0; i <= numYLabels-1; i++) {
-    const y = ((0.5+i) / numYLabels) * labelCanvas.height;
+  for (let i = 0; i <= numYLabels - 1; i++) {
+    const y = ((0.5 + i) / numYLabels) * labelCanvas.height;
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(labelCanvas.width, y);
@@ -888,9 +893,9 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
   // draw y-axis labels (frequencies)
   const freqMin = 25 / labelCanvas.height;
   const freqMax = 25;
-  for (let i = 0; i <= numYLabels-1; i++) {
-    const y = ((0.5+i) / numYLabels) * labelCanvas.height;
-    const freq = freqMin + ((i+0.5) / numYLabels) * (freqMax - freqMin);
+  for (let i = 0; i <= numYLabels - 1; i++) {
+    const y = ((0.5 + i) / numYLabels) * labelCanvas.height;
+    const freq = freqMin + ((i + 0.5) / numYLabels) * (freqMax - freqMin);
     ctx.fillStyle = "white";
     ctx.font = "14px Arial";
     ctx.fillText(`${freq.toFixed(1)} Hz`, 10, y);
@@ -905,7 +910,7 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
     const x = labelCanvas.width * (1 - i / numXLabels);
     const time = new Date(
       startTime.getTime() -
-        (i * (startTime.getTime() - endTime.getTime())) / numXLabels,
+      (i * (startTime.getTime() - endTime.getTime())) / numXLabels,
     );
     const timeString = time.toLocaleTimeString("de-DE");
     ctx.fillStyle = "white";
@@ -945,6 +950,10 @@ function renderSpectrogram() {
     gl.getUniformLocation(shaderProgram, "uMaxFrequency"),
     maxFrequency,
   );
+  gl.uniform1i(
+    gl.getUniformLocation(shaderProgram, "uRingbufferIndex"),
+    ringbuffer.index,
+  );
   // bind texture
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, ringbuffer.texture);
@@ -978,7 +987,7 @@ function resizeCanvas() {
 }
 
 // Resize spectrogram when the browser is resized
-document.addEventListener("DOMContentLoaded", function () {
+document.addEventListener("DOMContentLoaded", function() {
   resizeCanvas();
 });
 
@@ -987,10 +996,10 @@ addEventListener("resize", (event) => {
 });
 
 // DEBUG:
-setInterval(() => {
-  const newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 1;
-  //const newData = new Float32Array(newHeight).map(() => Math.random());
-  const newData = new Float32Array(newHeight).map((_, i) => 1+1e-3+Math.sin(5*2*Math.PI*i/newHeight) + Math.random()*0.2);
-
-  updateSpectrogram(newData, Date(), spectrumUpdateFrequency * 50);
-}, 50 * spectrumUpdateFrequency);
+// setInterval(() => {
+//   const newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 1;
+//   //const newData = new Float32Array(newHeight).map(() => Math.random());
+//   const newData = new Float32Array(newHeight).map((_, i) => 1+1e-3+Math.sin(5*2*Math.PI*i/newHeight) + Math.random()*0.2);
+//
+//   updateSpectrogram(newData, Date(), spectrumUpdateFrequency * 50);
+// }, 50 * spectrumUpdateFrequency);
