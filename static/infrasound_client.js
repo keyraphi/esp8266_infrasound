@@ -7,7 +7,7 @@ let number_of_new_measurements = 0;
 let computeTotalNoise = null;
 let computeSpectrumFromSquaredMagnitudes = null;
 
-pfft_module = null;
+pffft_module = null;
 pffft().then(function(Module) {
   console.log("PFFFT Module initialized");
   pffft_module = Module;
@@ -297,6 +297,23 @@ function setupEventListener() {
     },
     false,
   );
+  // Tell the esp to start taking measurements
+  startMeaurements();
+}
+
+function startMeaurements() {
+  const start_measurement_request = new XMLHttpRequest();
+
+  start_timestamp_request.onreadystatechange = function() {
+    if (
+      start_timestamp_request.readyState == XMLHttpRequest.DONE &&
+      start_timestamp_request.status == 200
+    ) {
+      console.log("Started Measurements...");
+    }
+  };
+  start_timestamp_request.open("GET", "/start_measurements", true);
+  start_timestamp_request.send();
 }
 
 // Time Series range
@@ -488,6 +505,11 @@ function handleAmplitudeUnitSwitch(radio) {
     }
   }
 }
+
+// Tell sensor to start measurements
+
+
+//////  SPECTROGRAM CODE
 
 class RingBufferTexture {
   constructor(glctx, width, height) {
@@ -974,6 +996,10 @@ function resizeCanvas() {
   const labelCanvas = document.getElementById("labelCanvas");
 
   // set new canvas sizes
+  if (webglCanvas.width == newWidth && webglCanvas.height == newHeight) {
+    // No change ... skip resize
+    return;
+  }
   webglCanvas.width = labelCanvas.width = newWidth;
   webglCanvas.height = labelCanvas.height = newHeight;
 

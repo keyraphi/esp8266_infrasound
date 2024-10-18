@@ -46,6 +46,8 @@ bool is_sd_card_available = false;
 bool is_wifi_client = false;
 bool is_json_finalized = false;
 uint64_t start_timestamp = 0;
+volatile bool is_measurement_running = false;
+volatile bool create_new_measurement_file = true;
 
 // Some global variables and buffers
 // ring buffer to buffer new measurements
@@ -335,13 +337,14 @@ void onGetDownloads(AsyncWebServerRequest *request) {
   directory.open("/measurements", O_RDONLY);
   directory.rewind();
   FsFile file;
-  char file_name[21];
+  char file_name[29];
   while (file.openNext(&directory, O_RDONLY)) {
     if (!file.isHidden()) {
       file.getName(file_name, sizeof(file_name));
-      if (strcmp(&file_name[strlen(file_name) - 2], "ms") == 0) {
-        continue;
-      }
+      // if (strcmp(&file_name[strlen(file_name) - 2], "ms") == 0) {
+      //   continue;
+      // }
+      cout << "DEBUG: " << file_name << endl;
       file_list.add(file_name);
     }
     file.close();
@@ -355,6 +358,7 @@ void onDownload(AsyncWebServerRequest *request) {
     request->send(500);
   }
   String file_name = request->getParam("file")->value();
+  cout << "Sending file " << file_name << " in a chunked response." << endl;
 
   AsyncWebServerResponse *response = request->beginChunkedResponse(
       "audio/wav",
@@ -362,28 +366,46 @@ void onDownload(AsyncWebServerRequest *request) {
                               size_t index) -> size_t {
         FsFile file;
         if (!file.open(("/measurements/" + file_name).c_str(), O_RDONLY)) {
+          cout << "Error: could not open file " << "/measurements/" + file_name << endl;
           return 0;
         }
 
+        uint32_t offset = 0;
         // seek to current position
         if (index == 0) {
           memcpy(buffer, "data", 4);
           uint32_t file_size = file.fileSize();
           memcpy(buffer + 4, reinterpret_cast<char *>(&file_size), 4);
           maxLen -= 8;
+          offset = 8;
         }
         file.seek(index);
-        size_t bytes_read = file.read(buffer, maxLen);
+        size_t bytes_read = file.read(buffer + offset , maxLen);
         file.close();
         return bytes_read;
       });
 
-  char buf[28 + file_name.length()];
-  memcpy(buf + 0, "attachment; filename=\"", 22);
-  memcpy(buf + 22, file_name.c_str(), file_name.length());
-  memcpy(buf + 22 + file_name.length(), ".raw\"\0", 6);
+  char name_buffer[28 + file_name.length()];
+  memcpy(name_buffer + 0, "attachment; filename=\"", 22);
+  memcpy(name_buffer + 22, file_name.c_str(), file_name.length());
+  memcpy(name_buffer + 22 + file_name.length(), ".raw\"\0", 6);
 
-  response->addHeader("Content-Disposition", buf);
+  response->addHeader("Content-Disposition", name_buffer);
+
+  // add file size to header
+  FsFile file;
+  if (!file.open(("/measurements/" + file_name).c_str(), O_RDONLY)) {
+    cout << "Error: could not open file " << "/measurements/" + file_name << endl;
+    request->send(500);
+    return;
+  }
+  uint64_t file_size_bytes = file.fileSize();
+  file.close();
+  file_size_bytes += 8;  // for header
+  char length_buffer[29];
+  snprintf(length_buffer, 29, "%llu", file_size_bytes);
+  response->addHeader("Content-Length", length_buffer);
+
   request->send(response);
 }
 
@@ -477,6 +499,29 @@ void onStartTimestamp(AsyncWebServerRequest *request) {
   request->send(response);
 }
 
+void onStartMeasurement(AsyncWebServerRequest *request) {
+  AsyncResponseStream *response = request->beginResponseStream("text/plain");
+  if (!is_measurement_running) {
+    cout << "Starting measurement" << endl;
+    create_new_measurement_file = true;
+  } else {
+    cout << "Measurements are already running" << endl;
+  }
+  is_measurement_running = true;
+  request->send(200);
+}
+
+void onStopMeasurement(AsyncWebServerRequest *request) {
+  AsyncResponseStream *response = request->beginResponseStream("text/plain");
+  if (is_measurement_running) {
+    cout << "Stopping measurement" << endl;
+  } else {
+    cout << "Measurements are already stopped" << endl;
+  }
+  is_measurement_running = false;
+  request->send(200);
+}
+
 void initWebserver() {
 
   cout << "Serving static files" << endl;
@@ -500,6 +545,10 @@ void initWebserver() {
   server.on("/set_wifi", HTTP_POST, onPostWifi);
   cout << "serving /start_timestamp" << endl;
   server.on("/start_timestamp", HTTP_GET, onStartTimestamp);
+  cout << "serving /start_measurements" << endl;
+  server.on("/start_measurements", HTTP_GET, onStartMeasurement);
+  cout << "serving /stop_measurements" << endl;
+  server.on("/stop_measurements", HTTP_GET, onStopMeasurement);
   server.onNotFound(onNotFound);
 
   cout << "Setting up handler for /measurement_event" << endl;
@@ -597,7 +646,8 @@ void createMeasurementFile() {
   while (sd.exists(measurement_file_name.c_str())) {
     ++retries;
     measurement_file_name =
-        "/measurements/" + String(start_timestamp) + "_" + String(retries);
+        "/measurements/" + millisecondsToTimeString(start_timestamp);
+    +"_" + String(retries);
   }
   cout << "Creating file " << measurement_file_name << endl;
   if (!measurement_file.open(measurement_file_name.c_str(),
@@ -652,7 +702,7 @@ void setup() {
     initTimestamp();
   }
 
-  createMeasurementFile();
+  // createMeasurementFile();
 
   // Setup Webserver
   initWebserver();
@@ -684,7 +734,12 @@ void sendMeasurementEvent(uint32_t measurement_idx, float measurement) {
 }
 
 void writeMeasurementFileBuffer() {
-  cout << "Writing " << measurements_in_file_buffer << " measurements to SD Card" << endl;
+  if (create_new_measurement_file) {
+    createMeasurementFile();
+    create_new_measurement_file = false;
+  }
+  cout << "Writing " << measurements_in_file_buffer
+       << " measurements to SD Card" << endl;
   if (!openMeasurementFileAppending()) {
     return;
   }
@@ -774,10 +829,12 @@ void checkArdinoForMeasurements() {
 }
 
 void loop() {
-  checkArdinoForMeasurements();
-  if (measurements_buffer.available() > 0) {
-    // Let clients know about the new measurements and write everything new to
-    // the event socket and file
-    handleNewMeasurements();
+  if (is_measurement_running) {
+    checkArdinoForMeasurements();
+    if (measurements_buffer.available() > 0) {
+      // Let clients know about the new measurements and write everything new to
+      // the event socket and file
+      handleNewMeasurements();
+    }
   }
 }
