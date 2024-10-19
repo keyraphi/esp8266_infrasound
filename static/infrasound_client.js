@@ -123,6 +123,7 @@ function initialize_pfft(fft_window) {
 }
 
 function fourier_transform(timeSequence) {
+  timeSequence = stableMeanOfFloat32Array(timeSequence);
   const buffer = new Float32Array(timeSequence);
 
   // Copy data to Emscripten heap (directly accessed from Module.HEAPU8)
@@ -154,6 +155,26 @@ function fourier_transform(timeSequence) {
 function setTotalNoise(totalValue) {
   const totalValueElement = document.getElementById("totalValue");
   totalValueElement.innerText = totalValue.toFixed(4);
+}
+
+/**
+ * Function to compute the mean of a Float32Array using Kahan summation for numerical stability
+ * @param {Float32Array} data - The input array
+ * @returns {number} - The mean of the elements in the array
+ */
+function stableMeanOfFloat32Array(data) {
+  let sum = 0;
+  let compensation = 0; // This is the compensation term for lost low-order bits
+  const len = data.length;
+
+  for (let i = 0; i < len; i++) {
+    const y = data[i] - compensation; // Correct the next value
+    const t = sum + y; // Accumulate the corrected value
+    compensation = (t - sum) - y; // Compute the new compensation
+    sum = t; // Update the sum with the corrected value
+  }
+
+  return sum / len;
 }
 
 function updateCharts() {
@@ -237,6 +258,8 @@ function setupEventListener() {
   console.log("setupEventListener");
   console.log("Creating EventSource");
   const source = new EventSource("/measurement_events");
+  // Tell the esp to start taking measurements
+  startMeaurements();
 
   source.addEventListener(
     "open",
@@ -297,8 +320,6 @@ function setupEventListener() {
     },
     false,
   );
-  // Tell the esp to start taking measurements
-  startMeaurements();
 }
 
 function startMeaurements() {
@@ -364,7 +385,6 @@ function handleSpectrumLogSwitch(checkbox) {
 function computeTotalRMS(frequencies, spectrum) {
   let rms = 0.0;
   rms = spectrum
-    .slice(1)
     .map((value) => value ** 2)
     .reduce((sum, value) => sum + value, 0); // skip the first entry with static content
   rms = rms / (spectrum.length - 1);
@@ -408,36 +428,85 @@ function AWeighting(f) {
   return 20 * Math.log10(numerator / denominator) + 2.0; // A-weighting has a +2.0 dB offset
 }
 
-const aWeightingCache = {};
+const gWeightingTable = [
+  { f: 0.25, gValue: -88 },
+  { f: 0.315, gValue: -80 },
+  { f: 0.4, gValue: -72.1 },
+  { f: 0.5, gValue: -64.3 },
+  { f: 0.63, gValue: -56.6 },
+  { f: 0.8, gValue: -49.5 },
+  { f: 1, gValue: -43 },
+  { f: 1.25, gValue: -37.5 },
+  { f: 1.6, gValue: -32.6 },
+  { f: 2.0, gValue: -28.3 },
+  { f: 2.5, gValue: -24.1 },
+  { f: 3.15, gValue: -20 },
+  { f: 4, gValue: -16 },
+  { f: 5, gValue: -12 },
+  { f: 6.3, gValue: -8 },
+  { f: 8, gValue: -4 },
+  { f: 10, gValue: 0 },
+  { f: 12.5, gValue: 4 },
+  { f: 16, gValue: 7.7 },
+  { f: 20, gValue: 9.0 },
+  { f: 25, gValue: 3.7 },
+];
+/**
+ * Function to compute the G-weighting for an arbitrary frequency using linear interpolation
+ * @param {number} f - The frequency for which to compute the G-weighting
+ * @returns {number} - The interpolated G-weighting value
+ */
+function GWeighting(f) {
+  // handle cases where f is outside the range
+  if (f < gWeightingTable[0].f) {
+    return gWeightingTable[0].gValue;
+  } else if (f > gWeightingTable[gWeightingTable.length - 1].f) {
+    return gWeightingTable[gWeightingTable.length - 1].gValue;
+  }
 
-function computeDBASpectrum(frequencies, spectrum) {
-  const result_spectrum = computeSPLSpectrum(frequencies, spectrum);
-  if (!aWeightingCache[frequencies]) {
-    const aWeightings = new Array(frequencies.length);
-    for (let i = 0; i < frequencies.length; i++) {
-      aWeightings[i] = AWeighting(frequencies[i]);
+  // interpolate between two nearest neigbours
+  // linear search because of low number of elements in list
+  for (let i = 0; i < gWeightingTable.length - 1; i++) {
+    const f_low = gWeightingTable[i].f;
+    const f_high = gWeightingTable[i + 1].f;
+
+    if (f >= f_low && f <= f_high) {
+      const g_low = gWeightingTable[i].gValue;
+      const g_high = gWeightingTable[i + 1].gValue;
+      return g_low + ((f - f_low) / (f_high - f_low)) * (g_high - g_low);
     }
-    aWeightingCache[frequencies] = aWeightings;
+  }
+}
+
+const gWeightingCache = {};
+
+function computeDBGSpectrum(frequencies, spectrum) {
+  const result_spectrum = computeSPLSpectrum(frequencies, spectrum);
+  if (!gWeightingCache[frequencies]) {
+    const gWeightings = new Array(frequencies.length);
+    for (let i = 0; i < frequencies.length; i++) {
+      gWeightings[i] = GWeighting(frequencies[i]);
+    }
+    gWeightingCache[frequencies] = gWeightings;
   }
   // retrieve precomputed aWeightings
-  const aWeightings = aWeightingCache[frequencies];
+  const gWeightings = gWeightingCache[frequencies];
 
   for (let i = 0; i < spectrum.length; i++) {
-    result_spectrum[i] = result_spectrum[i] + aWeightings[i];
+    result_spectrum[i] = result_spectrum[i] + gWeightings[i];
   }
   return result_spectrum;
 }
 
-function computeTotalDBA(frequencies, spectrum) {
-  const dba_spectrum = computeDBASpectrum(frequencies, spectrum);
-  const linear_spectrum = dba_spectrum.map((value) => 10 ** (value / 10));
+function computeTotalDBG(frequencies, spectrum) {
+  const dbg_spectrum = computeDBGSpectrum(frequencies, spectrum);
+  const linear_spectrum = dbg_spectrum.map((value) => 10 ** (value / 10));
   const total_linear_perassure = linear_spectrum.reduce(
     (sum, value) => sum + value,
     0,
   );
   const result = 10 * Math.log10(total_linear_perassure);
   return result;
-  // return 10 * Math.log10(dba_spectrum.reduce((sum, value) => sum + 10 ** (value / 10), 0));
 }
 
 let currentRenderMode = 0;
@@ -451,10 +520,10 @@ function handleAmplitudeUnitSwitch(radio) {
       totalUnit.innerText = "Pascal (Pa)";
       const infoRMS = document.getElementById("infoRMS");
       const infoSPL = document.getElementById("infoSPL");
-      const infoDBA = document.getElementById("infoDBA");
+      const infoDBG = document.getElementById("infoDBG");
       infoRMS.style.display = "block";
       infoSPL.style.display = "none";
-      infoDBA.style.display = "none";
+      infoDBG.style.display = "none";
 
       computeTotalNoise = computeTotalRMS;
       computeSpectrumFromSquaredMagnitudes = computeRMSSpectrum;
@@ -471,10 +540,10 @@ function handleAmplitudeUnitSwitch(radio) {
       totalUnit.innerText = "db(SPL)";
       const infoRMS = document.getElementById("infoRMS");
       const infoSPL = document.getElementById("infoSPL");
-      const infoDBA = document.getElementById("infoDBA");
+      const infoDBG = document.getElementById("infoDBG");
       infoRMS.style.display = "none";
       infoSPL.style.display = "block";
-      infoDBA.style.display = "none";
+      infoDBG.style.display = "none";
 
       computeTotalNoise = computeTotalSPL;
       computeSpectrumFromSquaredMagnitudes = computeSPLSpectrum;
@@ -486,17 +555,17 @@ function handleAmplitudeUnitSwitch(radio) {
       const totalTitleLabel = document.getElementById("totalTitleLabel");
       totalTitleLabel.innerText = "A-bewerteter Schallpegel";
       const totalUnit = document.getElementById("totalUnit");
-      totalUnit.innerText = "db(A)";
+      totalUnit.innerText = "db(G)";
       const infoRMS = document.getElementById("infoRMS");
       const infoSPL = document.getElementById("infoSPL");
-      const infoDBA = document.getElementById("infoDBA");
+      const infoDBG = document.getElementById("infoDBG");
       infoRMS.style.display = "none";
       infoSPL.style.display = "none";
-      infoDBA.style.display = "block";
+      infoDBG.style.display = "block";
 
-      computeTotalNoise = computeTotalDBA;
-      computeSpectrumFromSquaredMagnitudes = computeDBASpectrum;
-      chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(A)]";
+      computeTotalNoise = computeTotalDBG;
+      computeSpectrumFromSquaredMagnitudes = computeDBGSpectrum;
+      chartSpectrum.yAxis[0].axisTitle.textStr = "Schallpegel [dB(G)]";
       currentRenderMode = 2;
       break;
     }
@@ -728,29 +797,84 @@ float computeSPL(float value) {
   return 20.0 * log(value / sqrt_2 / p_ref) / log(10.0);
 }
 
-// Function for A-weighting
-float AWeighting(float f) {
-  const float c1 = 12200.0 * 12200.0;
-  const float c2 = 20.6 * 20.6;
-  const float c3 = 107.7 * 107.7;
-  const float c4 = 737.9 * 737.9;
+// Function for G-Weighting
+float GWeighting(float f) {
+  const float[21] frequencies = float[21](
+     0.25, 0.315,
+     0.4, 0.5,
+     0.63, 0.8,
+     1.0, 1.25,
+     1.6, 2.0,
+     2.5, 3.15,
+     4.0, 5.0,
+     6.3, 8.0,
+     10.0, 12.5,
+     16.0, 20.0, 25.0 );
+  const float[21] gValues = float[21](
+    -88.0,
+    -80.0, -72.1,
+    -64.3, -56.6,
+    -49.5, -43.0,
+    -37.5, -32.6,
+    -28.3, -24.1,
+    -20.0, -16.0,
+    -12.0, -8.0,
+    -4.0, 0.0,
+    4.0, 7.7,
+    9.0, 3.7
+ );
 
-  float f2 = f * f;
-  float f4 = f2 * f2;
+  if (f <= frequencies[0]) {
+    return gValues[0];
+  } else if (f >= frequencies[20]) {
+    return gValues[20]
+  }
 
-  // Calculate A-weighting in linear scale
-  float numerator = c1 * f4;
-  float denominator = (f2 + c2) * sqrt((f2 + c3) * (f2 + c4)) * (f2 + c1);
-  
-  // A-weighting and convert to dB
-  return 20.0 * log(numerator / denominator) / log(10.0) + 2.0; // A-weighting has a +2.0 dB offset
+  for (int i = 0; i < 20; ++i) {
+    if (f >= frequencies[i] && f <= frequencies[i + 1]) {
+        // Calculate the interpolation factor
+        float factor = (value - scalars[i]) / (scalars[i + 1] - scalars[i]);
+        return mix(colors[i], colors[i + 1], factor);
+    }
+  }
 }
 
-// Function to compute dBA
-float computeDBA(float value, float frequency) {
+// Function to compute dBG
+float computeDBG(float value, float frequency) {
   float splValue = computeSPL(value);
-  float aWeight = AWeighting(frequency);
-  return splValue + aWeight;
+  float gWeight = GWeighting(frequency);
+  return splValue + gWeight;
+}
+
+// Simple color map from white-blue-green-yellow-red-black
+vec3 rainbowColor(float value) {
+    // Clamp value to the range [0, 1]
+    value = clamp(value, 0.0, 1.0);
+
+    const float scalars[6] = float[6](0.0, 0.2, 0.4, 0.6, 0.8, 1.0);
+
+    const vec3 colors[6] = vec3[6](vec3(255,255,255),   // Scalar 0
+                                   vec3(0, 112, 255),   // Scalar 0.2
+                                   vec3(0, 255, 3),     // Scalar 0.4
+                                   vec3(255, 255, 4),   // Scalar 0.6
+                                   vec3(255, 2, 1),     // Scalar 0.8
+                                   vec3(0, 0, 0),       // Scalar 1
+                                  );
+
+    // Interpolate between the colors
+    vec3 color = colors[0]; // Default to the first color
+
+    for (int i = 0; i < 5; ++i) {
+        if (value >= scalars[i] && value <= scalars[i + 1]) {
+            // Calculate the interpolation factor
+            float factor = (value - scalars[i]) / (scalars[i + 1] - scalars[i]);
+            color = mix(colors[i], colors[i + 1], factor);
+            break;
+        }
+    }
+
+    // Normalize the color to the [0, 1] range by dividing by 255.0
+    return color / 255.0;
 }
 
 // Function to map a normalized value using a heatmap (inferno)
@@ -817,9 +941,9 @@ void main() {
     save_min_value = max(minValue, -120.0);
     value = clamp(value, save_min_value, maxValue);
   } else if (uRenderMode == 2) {
-    value = computeDBA(value, frequency);
-    maxValue = computeDBA(maxValue, 24.9);
-    minValue = computeDBA(minValue, 0.1);
+    value = computeDBG(value, frequency);
+    maxValue = computeDBG(maxValue, 24.9);
+    minValue = computeDBG(minValue, 0.1);
     // Make sure min value is not -inf if an amplitude ever really gets 0
     save_min_value = max(minValue, -120.0);
     value = clamp(value, save_min_value, maxValue);
@@ -828,7 +952,8 @@ void main() {
   // Normalize spectrogram to [0, 1]
   value = (value - save_min_value) / (maxValue - save_min_value);
   // get color
-  vec3 color = heatmapColor(value);
+  vec3 color = rainbowColor(value);
+  // vec3 color = heatmapColor(value);
   fragColor = vec4(color, 1.0);
 }
 `;
@@ -865,7 +990,7 @@ void main() {
 
   // create ringbuffer texture
   const width = document.getElementById("SpectrogramDiv").offsetWidth;
-  const height = 2 ** document.getElementById("spectrumRange").value / 2 - 2;
+  const height = 2 ** document.getElementById("spectrumRange").value / 2 - 1;
   ringbuffer = new RingBufferTexture(gl, width, height);
 }
 
@@ -876,9 +1001,6 @@ function updateSpectrogram(newSpectrum, currentTime, updateIntervals) {
     console.warn("No webgl available - I won't update the spectrogram");
     return;
   }
-  // The first entry in the new spectrum is just a constant (frequency = 0).
-  // We remove it here and don't include it in the spectrogram
-  newSpectrum = newSpectrum.slice(1);
   ringbuffer.addColumn(newSpectrum);
   renderSpectrogram();
 

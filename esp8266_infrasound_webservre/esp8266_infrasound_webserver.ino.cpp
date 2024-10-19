@@ -46,7 +46,8 @@ bool is_sd_card_available = false;
 bool is_wifi_client = false;
 bool is_json_finalized = false;
 uint64_t start_timestamp = 0;
-volatile bool is_measurement_running = false;
+volatile bool is_measurement_sent = false;
+volatile bool are_measurements_written = false;
 volatile bool create_new_measurement_file = true;
 
 // Some global variables and buffers
@@ -366,7 +367,8 @@ void onDownload(AsyncWebServerRequest *request) {
                               size_t index) -> size_t {
         FsFile file;
         if (!file.open(("/measurements/" + file_name).c_str(), O_RDONLY)) {
-          cout << "Error: could not open file " << "/measurements/" + file_name << endl;
+          cout << "Error: could not open file " << "/measurements/" + file_name
+               << endl;
           return 0;
         }
 
@@ -380,7 +382,7 @@ void onDownload(AsyncWebServerRequest *request) {
           offset = 8;
         }
         file.seek(index);
-        size_t bytes_read = file.read(buffer + offset , maxLen);
+        size_t bytes_read = file.read(buffer + offset, maxLen);
         file.close();
         return bytes_read;
       });
@@ -395,13 +397,14 @@ void onDownload(AsyncWebServerRequest *request) {
   // add file size to header
   FsFile file;
   if (!file.open(("/measurements/" + file_name).c_str(), O_RDONLY)) {
-    cout << "Error: could not open file " << "/measurements/" + file_name << endl;
+    cout << "Error: could not open file " << "/measurements/" + file_name
+         << endl;
     request->send(500);
     return;
   }
   uint64_t file_size_bytes = file.fileSize();
   file.close();
-  file_size_bytes += 8;  // for header
+  file_size_bytes += 8; // for header
   char length_buffer[29];
   snprintf(length_buffer, 29, "%llu", file_size_bytes);
   response->addHeader("Content-Length", length_buffer);
@@ -501,24 +504,30 @@ void onStartTimestamp(AsyncWebServerRequest *request) {
 
 void onStartMeasurement(AsyncWebServerRequest *request) {
   AsyncResponseStream *response = request->beginResponseStream("text/plain");
-  if (!is_measurement_running) {
+  if (!is_measurement_sent) {
     cout << "Starting measurement" << endl;
     create_new_measurement_file = true;
+    cout << "Adding handler for /measurement_event" << endl;
+    events.onConnect(onConnect);
+    server.addHandler(&events);
   } else {
     cout << "Measurements are already running" << endl;
   }
-  is_measurement_running = true;
+  is_measurement_sent = true;
   request->send(200);
 }
 
 void onStopMeasurement(AsyncWebServerRequest *request) {
   AsyncResponseStream *response = request->beginResponseStream("text/plain");
-  if (is_measurement_running) {
+  if (is_measurement_sent) {
     cout << "Stopping measurement" << endl;
+    cout << "Removing handler for /measurement_event" << endl;
+    events.onConnect(onConnect);
+    server.removeHandler(&events);
   } else {
     cout << "Measurements are already stopped" << endl;
   }
-  is_measurement_running = false;
+  is_measurement_sent = false;
   request->send(200);
 }
 
@@ -534,6 +543,11 @@ void initWebserver() {
   server.on("/favicon.ico", HTTP_GET, onStaticFile);
   server.on("/pffft/pffft.js", HTTP_GET, onStaticFile);
   server.on("/pffft/pffft.wasm", HTTP_GET, onStaticFile);
+  server.on("/bootstrap/bootstrap.bundle.min.js", HTTP_GET, onStaticFile);
+  server.on("/bootstrap/bootstrap.bootstrap.min.css", HTTP_GET, onStaticFile);
+  server.on("/highcharts/highcharts.js", HTTP_GET, onStaticFile);
+  server.on("/highcharts/exporting.js", HTTP_GET, onStaticFile);
+  server.on("/highcharts/export-data.js", HTTP_GET, onStaticFile);
 
   cout << "Serving /measurements" << endl;
   server.on("/measurements", HTTP_GET, onGetMeasurement);
@@ -702,7 +716,7 @@ void setup() {
     initTimestamp();
   }
 
-  // createMeasurementFile();
+  are_measurements_written = true;
 
   // Setup Webserver
   initWebserver();
@@ -754,8 +768,10 @@ void writeMeasurementFileBuffer() {
 }
 
 void handleNewMeasurements() {
-  if (measurements_in_file_buffer > measurement_file_buffer_size - 8) {
-    writeMeasurementFileBuffer();
+  if (are_measurements_written) {
+    if (measurements_in_file_buffer > measurement_file_buffer_size - 8) {
+      writeMeasurementFileBuffer();
+    }
   }
   // Send data from buffer directly through event socket
   for (uint32_t i = 0; i < measurements_buffer.available(); ++i) {
@@ -765,7 +781,9 @@ void handleNewMeasurements() {
                               // same size!
     measurement_file_buffer[measurements_in_file_buffer++] = measurement;
     // Send via websocket
-    sendMeasurementEvent(measurement_idx, measurement);
+    if (is_measurement_sent) {
+      sendMeasurementEvent(measurement_idx, measurement);
+    }
   }
 }
 
@@ -829,7 +847,7 @@ void checkArdinoForMeasurements() {
 }
 
 void loop() {
-  if (is_measurement_running) {
+  if (are_measurements_written || is_measurement_sent) {
     checkArdinoForMeasurements();
     if (measurements_buffer.available() > 0) {
       // Let clients know about the new measurements and write everything new to
