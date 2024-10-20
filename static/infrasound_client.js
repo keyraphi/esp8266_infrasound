@@ -4,6 +4,13 @@ const spectrumUpdateFrequency = 10;
 
 let number_of_new_measurements = 0;
 
+let last_index_in_spectrogram = -1;
+let spectrogram_overlap_fraction = 0.9;
+
+// min and max value in color range for db(G)
+const minDbG = 0;
+const maxDbG = 100;
+
 let computeTotalNoise = null;
 let computeSpectrumFromSquaredMagnitudes = null;
 
@@ -229,12 +236,22 @@ function updateCharts() {
     const hz = (i * 50.0) / fft_time_sequence.length;
     frequencies[i] = hz;
   }
-  // Spectrogram should always be updated, otherwise there will be disconituities whenever it is hidden
-  updateSpectrogram(
-    spectrum,
-    times_buffer[times_buffer.length - 1],
-    spectrumUpdateFrequency * 50,
-  );
+  // Spectrogram should always be updated even when it is hidden, otherwise there will be disconituities whenever it is hidden
+  last_index = index_buffer[index_buffer.length - 1];
+  if (last_index - last_index_in_spectrogram > fft_window * (1 - spectrogram_overlap_fraction)) {
+    console.log("Updating spectrogram");
+    last_index_in_spectrogram = last_index;
+    var update_frequency = fft_window * (1 - spectrogram_overlap_fraction) * 50;
+    if (spectrogram_overlap_fraction >= 1) {
+      update_frequency = 50 * spectrumUpdateFrequency;
+    }
+    updateSpectrogram(
+      spectrum,
+      times_buffer[times_buffer.length - 1],
+      update_frequency,
+    );
+  }
+
 
   scaled_spectrum = computeSpectrumFromSquaredMagnitudes(frequencies, spectrum);
   totalNoise = computeTotalNoise(frequencies, spectrum);
@@ -575,6 +592,10 @@ function handleAmplitudeUnitSwitch(choice) {
       console.log("WARNING: got unexpected choice for amplitude unit", choice);
     }
   }
+
+  renderSpectrogram(minDbG, maxDbG);
+
+  updateColormap(ringbuffer.min, ringbuffer.max, minDbG, maxDbG);
 }
 
 function handleIsTimeSeriesShownSwitch(checkbox) {
@@ -1035,8 +1056,6 @@ function updateSpectrogram(newSpectrum, currentTime, updateIntervals) {
   }
   ringbuffer.addColumn(newSpectrum);
 
-  const minDbG = 0;
-  const maxDbG = 100;
   renderSpectrogram(minDbG, maxDbG);
 
   updateSpectrogramLabels(currentTime, updateIntervals);
@@ -1182,7 +1201,7 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
     const hz_label_height = 14;
     ctx.fillStyle = "black";
     ctx.font = "14px Arial";
-    ctx.fillText(hz_label, 10, y+hz_label_height/2);
+    ctx.fillText(hz_label, 10, y + hz_label_height / 2);
   }
 
   // draw x-axis labels (time)
@@ -1274,6 +1293,10 @@ function resizeCanvas() {
   container.style.height = `${newHeight}px`;
 
   gl.viewport(0, 0, webglCanvas.width, webglCanvas.height);
+
+  renderSpectrogram(minDbG, maxDbG);
+
+  updateColormap(ringbuffer.min, ringbuffer.max, minDbG, maxDbG);
 }
 
 // Resize spectrogram when the browser is resized
