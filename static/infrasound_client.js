@@ -11,6 +11,10 @@ let computeSpectrumFromSquaredMagnitudes = null;
 let isTimeSeriesShown = true;
 let isSpectrumShown = false;
 let isSpectrogramShown = false;
+// Make usre the checkboxes reflect the initial state
+document.getElementById("isTimeSeriesShown").checked = isTimeSeriesShown;
+document.getElementById("isSpectrumShown").checked = isSpectrumShown;
+document.getElementById("isSpectrogramShown").checked = isSpectrogramShown;
 
 pffft_module = null;
 pffft().then(function(Module) {
@@ -184,6 +188,7 @@ function stableMeanOfFloat32Array(data) {
 }
 
 function updateCharts() {
+
   // We never show data older than 5 minutes = 15000 samples @ 50 Hz
   measurement_buffer = measurement_buffer.slice(-15000);
   times_buffer = times_buffer.slice(-15000);
@@ -508,8 +513,7 @@ function computeTotalDBG(frequencies, spectrum) {
 }
 
 let currentRenderMode = 0;
-function handleAmplitudeUnitSwitch(radio) {
-  const choice = radio.id;
+function handleAmplitudeUnitSwitch(choice) {
   switch (choice) {
     case "usePa": {
       const totalTitleLabel = document.getElementById("totalTitleLabel");
@@ -578,10 +582,8 @@ function handleIsTimeSeriesShownSwitch(checkbox) {
   console.log("Visibility of time series:", isTimeSeriesShown);
   const timeSeriesContainer = document.getElementById("TimeSeriesContainer");
   if (isTimeSeriesShown) {
-    // timeSeriesContainer.style.removeProperty("Visibility");
     timeSeriesContainer.style.removeProperty("display");
   } else {
-    // timeSeriesContainer.style.visibility = "hidden";
     timeSeriesContainer.style.display = "none";
   }
 }
@@ -591,29 +593,22 @@ function handleIsSpectrumShownSwitch(checkbox) {
   console.log("Visibility of Spectrum:", isSpectrumShown);
   const spectrumContainer = document.getElementById("SpectrumContainer");
   if (isSpectrumShown) {
-    // spectrumContainer.style.removeProperty("visibility");
     spectrumContainer.style.removeProperty("display");
   } else {
-    // spectrumContainer.style.visibility = "hidden";
     spectrumContainer.style.display = "none";
   }
 }
 
 function handleIsSpectrogramShownSwitch(checkbox) {
   isSpectrogramShown = checkbox.checked;
-  console.log("Visibility of Spectrum:", isSpectrumShown);
+  console.log("Visibility of Spectrogram:", isSpectrogramShown);
   const spectrogramContainer = document.getElementById("SpectrogramContainer");
   if (isSpectrogramShown) {
-    // spectrogramContainer.style.removeProperty("visibility");
     spectrogramContainer.style.removeProperty("display");
   } else {
-    // spectrogramContainer.style.visibility = "hidden";
     spectrogramContainer.style.display = "none";
   }
 }
-
-// Tell sensor to start measurements
-
 
 //////  SPECTROGRAM CODE
 
@@ -820,8 +815,8 @@ uniform int uRenderMode;
 // minimum and maximum value for normalization
 uniform float uMinValue;
 uniform float uMaxValue;
-uniform float uMinFrequency;
-uniform float uMaxFrequency;
+uniform float uMinDbG;
+uniform float uMaxDbG;
 uniform int uRingbufferIndex;
 
 // output color
@@ -979,10 +974,10 @@ void main() {
     value = clamp(value, save_min_value, maxValue);
   } else if (uRenderMode == 2) {
     value = computeDBG(value, frequency);
-    maxValue = computeDBG(maxValue, 20.0);
-    minValue = computeDBG(minValue, 0.1);
+    minValue = uMinDbG;
+    maxValue = uMaxDbG;
+    save_min_value = minValue;
     // Make sure min value is not -inf if an amplitude ever really gets 0
-    save_min_value = max(minValue, -120.0);
     value = clamp(value, save_min_value, maxValue);
   }
   
@@ -1039,10 +1034,116 @@ function updateSpectrogram(newSpectrum, currentTime, updateIntervals) {
     return;
   }
   ringbuffer.addColumn(newSpectrum);
-  renderSpectrogram();
+
+  const minDbG = 0;
+  const maxDbG = 100;
+  renderSpectrogram(minDbG, maxDbG);
 
   updateSpectrogramLabels(currentTime, updateIntervals);
+  updateColormap(ringbuffer.min, ringbuffer.max, minDbG, maxDbG);
 }
+function computeColorFromValue(value) {
+  const scalars = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+
+  const colors = [
+    { "red": 255, "green": 255, "blue": 255 },
+    { "red": 0, "green": 112, "blue": 255 },
+    { "red": 0, "green": 255, "blue": 3 },
+    { "red": 255, "green": 255, "blue": 4 },
+    { "red": 255, "green": 2, "blue": 1 },
+    { "red": 0, "green": 0, "blue": 0 },
+  ];
+
+  // Interpolate between the colors
+  let color = colors[0]; // Default to the first color
+
+  for (let i = 0; i < 5; i++) {
+    if (value >= scalars[i] && value <= scalars[i + 1]) {
+      // Calculate the interpolation factor
+      const factor = (value - scalars[i]) / (scalars[i + 1] - scalars[i]);
+      color.red = (1 - factor) * colors[i].red + factor * colors[i + 1].red;
+      color.green = (1 - factor) * colors[i].green + factor * colors[i + 1].green;
+      color.blue = (1 - factor) * colors[i].blue + factor * colors[i + 1].blue;
+      return color;
+    }
+  }
+  return color;
+}
+
+function linspace(start, stop, num) {
+  const result = new Float32Array(num);
+  result[0] = start;
+  if (num === 1) {
+    return result;
+  }
+  result[result.length - 1] = stop;
+
+  step = (stop - start) / (num - 1);
+  for (let i = 1; i < num - 1; ++i) {
+    result[i] = start + step * i;
+  }
+  return result;
+}
+
+function updateColormap(minPa, maxPa, minDbG, maxDbG) {
+  const colormapCanvas = document.getElementById("colormap");
+  const ctx = colormapCanvas.getContext("2d");
+  ctx.clearRect(0, 0, colormapCanvas.width, colormapCanvas.height);
+
+  const padding = 50;
+  // draw color (todo can be optimized by putting createion of imageData into resize())
+  const imageData = ctx.createImageData(colormapCanvas.width, colormapCanvas.height);
+  for (let x = 0; x < colormapCanvas.width - padding * 2; x++) {
+    const color = computeColorFromValue(x / (colormapCanvas.width - padding * 2 - 1));
+    for (let y = 0; y < 10; y++) {
+      const index = 4 * ((y * colormapCanvas.width) + x + padding);
+      imageData.data[index + 0] = color.red;
+      imageData.data[index + 1] = color.green;
+      imageData.data[index + 2] = color.blue;
+      imageData.data[index + 3] = 255;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  // Draw grid lines
+  const numXLabels = Math.round((colormapCanvas.width - padding * 2) / 200);
+  const start_x = padding;
+  const stop_x = colormapCanvas.width - padding;
+  const xs = linspace(start_x, stop_x, numXLabels)
+  for (const x of xs) {
+    ctx.beginPath();
+    ctx.moveTo(x, 10);
+    ctx.lineTo(x, 15);
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // // Draw labels
+  spectrum = new Float32Array([minPa, maxPa]);
+  frequencies = new Float32Array([0, 25]); // is ignored
+  min_max = computeSpectrumFromSquaredMagnitudes(frequencies, spectrum);
+  unit = "pa";
+  if (currentRenderMode == 1) {
+    unit = "db(SPL)";
+  } else if (currentRenderMode == 2) {
+    unit = "db(G)";
+    // Fixed value range for db(G)
+    min_max[0] = minDbG;
+    min_max[1] = maxDbG;
+  }
+
+  for (const [i, x] of xs.entries()) {
+    const weight = i / (numXLabels - 1);
+    const value = (1 - weight) * min_max[0] + weight * min_max[1];
+    const label = `${value.toExponential(1)} ${unit}`;
+    const labelWidth = ctx.measureText(label).width;
+    ctx.fillStyle = "black";
+    ctx.font = "14px Arial";
+    ctx.fillText(label, x - labelWidth / 2, colormapCanvas.height - 10);
+  }
+}
+
 
 function updateSpectrogramLabels(currentTime, updateIntervals) {
   const labelCanvas = document.getElementById("labelCanvas");
@@ -1055,9 +1156,9 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
   for (let i = 0; i <= numYLabels - 1; i++) {
     const y = ((0.5 + i) / numYLabels) * labelCanvas.height;
     ctx.beginPath();
-    ctx.moveTo(0, y);
+    ctx.moveTo(80, y);
     ctx.lineTo(labelCanvas.width, y);
-    ctx.strokeStyle = "rgba(211, 211, 211, 0.5)";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
     ctx.lineWidth = 1;
     ctx.stroke();
   }
@@ -1066,7 +1167,7 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, labelCanvas.height);
-    ctx.strokeStyle = "rgba(211, 211, 211, 0.5)";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
     ctx.lineWidth = 1;
     ctx.stroke();
   }
@@ -1077,9 +1178,11 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
   for (let i = 0; i <= numYLabels - 1; i++) {
     const y = ((0.5 + i) / numYLabels) * labelCanvas.height;
     const freq = freqMin + ((i + 0.5) / numYLabels) * (freqMax - freqMin);
-    ctx.fillStyle = "white";
+    const hz_label = `${freq.toFixed(1)} Hz`;
+    const hz_label_height = 14;
+    ctx.fillStyle = "black";
     ctx.font = "14px Arial";
-    ctx.fillText(`${freq.toFixed(1)} Hz`, 10, y);
+    ctx.fillText(hz_label, 10, y+hz_label_height/2);
   }
 
   // draw x-axis labels (time)
@@ -1094,13 +1197,14 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
       (i * (startTime.getTime() - endTime.getTime())) / numXLabels,
     );
     const timeString = time.toLocaleTimeString("de-DE");
-    ctx.fillStyle = "white";
+    const timeStringWidth = ctx.measureText(timeString).width;
+    ctx.fillStyle = "black";
     ctx.font = "14px Arial";
-    ctx.fillText(timeString, x, labelCanvas.height - 10);
+    ctx.fillText(timeString, x - timeStringWidth, labelCanvas.height - 10);
   }
 }
 
-function renderSpectrogram() {
+function renderSpectrogram(minDbG, maxDbG) {
   if (!gl) {
     console.warn("Can not render Spectrum - webgl not supported");
     return;
@@ -1121,15 +1225,13 @@ function renderSpectrogram() {
     gl.getUniformLocation(shaderProgram, "uMaxValue"),
     ringbuffer.max,
   );
-  const minFrequency = (1 + ringbuffer.minIdx) / (ringbuffer.height + 1);
-  const maxFrequency = (1 + ringbuffer.maxIdx) / (ringbuffer.height + 1);
   gl.uniform1f(
-    gl.getUniformLocation(shaderProgram, "uMinFrequency"),
-    minFrequency,
+    gl.getUniformLocation(shaderProgram, "uMinDbG"),
+    minDbG,
   );
   gl.uniform1f(
-    gl.getUniformLocation(shaderProgram, "uMaxFrequency"),
-    maxFrequency,
+    gl.getUniformLocation(shaderProgram, "uMaxDbG"),
+    maxDbG,
   );
   gl.uniform1i(
     gl.getUniformLocation(shaderProgram, "uRingbufferIndex"),
@@ -1148,11 +1250,13 @@ function resizeCanvas() {
   }
   const newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 2;
   const container = document.getElementById("SpectrogramDiv");
-  const newWidth = container.offsetWidth;
+  const optionsContainer = document.getElementById("visibilityOptionsContainer");
+  const newWidth = optionsContainer.offsetWidth;
 
   // get canvases
   const webglCanvas = document.getElementById("webglCanvas");
   const labelCanvas = document.getElementById("labelCanvas");
+  const colormapCanvas = document.getElementById("colormap");
 
   // set new canvas sizes
   if (webglCanvas.width == newWidth && webglCanvas.height == newHeight) {
@@ -1161,9 +1265,10 @@ function resizeCanvas() {
   }
   webglCanvas.width = labelCanvas.width = newWidth;
   webglCanvas.height = labelCanvas.height = newHeight;
+  colormapCanvas.width = newWidth;
+  colormapCanvas.height = 50;
 
   ringbuffer.resize(newWidth, newHeight);
-  renderSpectrogram();
 
   // set height of parent div
   container.style.height = `${newHeight}px`;
@@ -1180,11 +1285,3 @@ addEventListener("resize", (event) => {
   resizeCanvas();
 });
 
-// DEBUG:
-// setInterval(() => {
-//   const newHeight = 2 ** document.getElementById("spectrumRange").value / 2 - 1;
-//   //const newData = new Float32Array(newHeight).map(() => Math.random());
-//   const newData = new Float32Array(newHeight).map((_, i) => 1+1e-3+Math.sin(5*2*Math.PI*i/newHeight) + Math.random()*0.2);
-//
-//   updateSpectrogram(newData, Date(), spectrumUpdateFrequency * 50);
-// }, 50 * spectrumUpdateFrequency);
