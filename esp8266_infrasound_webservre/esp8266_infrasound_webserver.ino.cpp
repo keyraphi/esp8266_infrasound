@@ -46,8 +46,7 @@ bool is_sd_card_available = false;
 bool is_wifi_client = false;
 bool is_json_finalized = false;
 uint64_t start_timestamp = 0;
-volatile bool is_measurement_sent = false;
-volatile bool are_measurements_written = false;
+volatile bool is_measurement_running = true;
 volatile bool create_new_measurement_file = true;
 
 // Some global variables and buffers
@@ -156,7 +155,7 @@ bool write_wifi_credentials() {
 }
 
 void onNotFound(AsyncWebServerRequest *request) {
-  cout << "A unknown request was sent" << endl;
+  cout << "A unknown request was sent: " << request->url() << endl;
   request->send(404, "text/plain", "Not found");
 }
 
@@ -417,6 +416,8 @@ void onStaticFile(AsyncWebServerRequest *request) {
   String contentType;
   if (url.endsWith(".html"))
     contentType = "text/html";
+  else if (url.endsWith(".css")) 
+    contentType = "text/css";
   else if (url.endsWith(".js"))
     contentType = "application/javascript";
   else if (url.endsWith(".wasm"))
@@ -428,21 +429,23 @@ void onStaticFile(AsyncWebServerRequest *request) {
 
   String ssd_path = "/www/static" + url;
 
+  cout << "File " << ssd_path << " was requested" << endl;
+
   // send 128 bytes as html text
   AsyncWebServerResponse *response = request->beginChunkedResponse(
       contentType.c_str(),
       [ssd_path = ssd_path](uint8_t *buffer, size_t maxLen,
                             size_t index) -> size_t {
-        FsFile html_file;
-        if (!html_file.open(ssd_path.c_str(), O_RDONLY)) {
-          cout << "Failed to open html_file" << endl;
+        FsFile static_file;
+        if (!static_file.open(ssd_path.c_str(), O_RDONLY)) {
+          cout << "Failed to open static_file" << endl;
           return 0;
         }
-        if (!html_file.seek(index)) {
-          cout << "Failed to seek in html_file" << endl;
+        if (!static_file.seek(index)) {
+          cout << "Failed to seek in static_file" << endl;
         }
-        size_t read_bytes = html_file.read(buffer, maxLen);
-        html_file.close();
+        size_t read_bytes = static_file.read(buffer, maxLen);
+        static_file.close();
         return read_bytes;
       });
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
@@ -504,7 +507,7 @@ void onStartTimestamp(AsyncWebServerRequest *request) {
 
 void onStartMeasurement(AsyncWebServerRequest *request) {
   AsyncResponseStream *response = request->beginResponseStream("text/plain");
-  if (!is_measurement_sent) {
+  if (!is_measurement_running) {
     cout << "Starting measurement" << endl;
     create_new_measurement_file = true;
     cout << "Adding handler for /measurement_event" << endl;
@@ -513,13 +516,13 @@ void onStartMeasurement(AsyncWebServerRequest *request) {
   } else {
     cout << "Measurements are already running" << endl;
   }
-  is_measurement_sent = true;
+  is_measurement_running = true;
   request->send(200);
 }
 
 void onStopMeasurement(AsyncWebServerRequest *request) {
   AsyncResponseStream *response = request->beginResponseStream("text/plain");
-  if (is_measurement_sent) {
+  if (is_measurement_running) {
     cout << "Stopping measurement" << endl;
     cout << "Removing handler for /measurement_event" << endl;
     events.onConnect(onConnect);
@@ -527,7 +530,7 @@ void onStopMeasurement(AsyncWebServerRequest *request) {
   } else {
     cout << "Measurements are already stopped" << endl;
   }
-  is_measurement_sent = false;
+  is_measurement_running = false;
   request->send(200);
 }
 
@@ -544,7 +547,7 @@ void initWebserver() {
   server.on("/pffft/pffft.js", HTTP_GET, onStaticFile);
   server.on("/pffft/pffft.wasm", HTTP_GET, onStaticFile);
   server.on("/bootstrap/bootstrap.bundle.min.js", HTTP_GET, onStaticFile);
-  server.on("/bootstrap/bootstrap.bootstrap.min.css", HTTP_GET, onStaticFile);
+  server.on("/bootstrap/bootstrap.min.css", HTTP_GET, onStaticFile);
   server.on("/highcharts/highcharts.js", HTTP_GET, onStaticFile);
   server.on("/highcharts/exporting.js", HTTP_GET, onStaticFile);
   server.on("/highcharts/export-data.js", HTTP_GET, onStaticFile);
@@ -716,7 +719,7 @@ void setup() {
     initTimestamp();
   }
 
-  are_measurements_written = true;
+  is_measurement_running = true;
 
   // Setup Webserver
   initWebserver();
@@ -768,10 +771,8 @@ void writeMeasurementFileBuffer() {
 }
 
 void handleNewMeasurements() {
-  if (are_measurements_written) {
-    if (measurements_in_file_buffer > measurement_file_buffer_size - 8) {
-      writeMeasurementFileBuffer();
-    }
+  if (measurements_in_file_buffer > measurement_file_buffer_size - 8) {
+    writeMeasurementFileBuffer();
   }
   // Send data from buffer directly through event socket
   for (uint32_t i = 0; i < measurements_buffer.available(); ++i) {
@@ -781,7 +782,7 @@ void handleNewMeasurements() {
                               // same size!
     measurement_file_buffer[measurements_in_file_buffer++] = measurement;
     // Send via websocket
-    if (is_measurement_sent) {
+    if (is_measurement_running) {
       sendMeasurementEvent(measurement_idx, measurement);
     }
   }
@@ -847,7 +848,7 @@ void checkArdinoForMeasurements() {
 }
 
 void loop() {
-  if (are_measurements_written || is_measurement_sent) {
+  if (is_measurement_running) {
     checkArdinoForMeasurements();
     if (measurements_buffer.available() > 0) {
       // Let clients know about the new measurements and write everything new to

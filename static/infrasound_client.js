@@ -123,7 +123,8 @@ function initialize_pfft(fft_window) {
 }
 
 function fourier_transform(timeSequence) {
-  timeSequence = stableMeanOfFloat32Array(timeSequence);
+  mean = stableMeanOfFloat32Array(timeSequence);
+  timeSequence = timeSequence.map((value) => value - mean);
   const buffer = new Float32Array(timeSequence);
 
   // Copy data to Emscripten heap (directly accessed from Module.HEAPU8)
@@ -259,7 +260,6 @@ function setupEventListener() {
   console.log("Creating EventSource");
   const source = new EventSource("/measurement_events");
   // Tell the esp to start taking measurements
-  startMeaurements();
 
   source.addEventListener(
     "open",
@@ -320,6 +320,7 @@ function setupEventListener() {
     },
     false,
   );
+  startMeaurements();
 }
 
 function startMeaurements() {
@@ -551,9 +552,9 @@ function handleAmplitudeUnitSwitch(radio) {
       currentRenderMode = 1;
       break;
     }
-    case "useDbA": {
+    case "useDbG": {
       const totalTitleLabel = document.getElementById("totalTitleLabel");
-      totalTitleLabel.innerText = "A-bewerteter Schallpegel";
+      totalTitleLabel.innerText = "G-bewerteter Schallpegel";
       const totalUnit = document.getElementById("totalUnit");
       totalUnit.innerText = "db(G)";
       const infoRMS = document.getElementById("infoRMS");
@@ -827,14 +828,14 @@ float GWeighting(float f) {
   if (f <= frequencies[0]) {
     return gValues[0];
   } else if (f >= frequencies[20]) {
-    return gValues[20]
+    return gValues[20];
   }
 
   for (int i = 0; i < 20; ++i) {
     if (f >= frequencies[i] && f <= frequencies[i + 1]) {
         // Calculate the interpolation factor
-        float factor = (value - scalars[i]) / (scalars[i + 1] - scalars[i]);
-        return mix(colors[i], colors[i + 1], factor);
+        float factor = (f - frequencies[i]) / (frequencies[i + 1] - frequencies[i]);
+        return mix(gValues[i], gValues[i + 1], factor);
     }
   }
 }
@@ -858,7 +859,7 @@ vec3 rainbowColor(float value) {
                                    vec3(0, 255, 3),     // Scalar 0.4
                                    vec3(255, 255, 4),   // Scalar 0.6
                                    vec3(255, 2, 1),     // Scalar 0.8
-                                   vec3(0, 0, 0),       // Scalar 1
+                                   vec3(0, 0, 0)       // Scalar 1
                                   );
 
     // Interpolate between the colors
@@ -942,7 +943,7 @@ void main() {
     value = clamp(value, save_min_value, maxValue);
   } else if (uRenderMode == 2) {
     value = computeDBG(value, frequency);
-    maxValue = computeDBG(maxValue, 24.9);
+    maxValue = computeDBG(maxValue, 20);
     minValue = computeDBG(minValue, 0.1);
     // Make sure min value is not -inf if an amplitude ever really gets 0
     save_min_value = max(minValue, -120.0);

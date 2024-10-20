@@ -11,6 +11,18 @@
 </head>
 
 <body>
+  <script>
+
+    // Make sure the measurements are stopped
+    const stopMeasurementRequest = new XMLHttpRequest();
+    stopMeasurementRequest.onreadystatechange = function () {
+      if (this.readyState == 4 && this.status == 200) {
+        console.log("Stopped measurements");
+      }
+    };
+    stopMeasurementRequest.open("GET", "/stop_measurements");
+    stopMeasurementRequest.send();
+  </script>
 
   <div class="container overflow-hidden">
     <div class="mb-2 mt-4">

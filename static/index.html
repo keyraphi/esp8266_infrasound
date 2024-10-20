@@ -4,13 +4,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="infrasound viewport" content="width=device-with, initial-scale=1">
-  <script src="highcharts/highcharts.js"></script>
-  <script src="highcharts/exporting.js"></script>
-  <script src="highcharts/export-data.js"></script>
+  <script src="https://code.highcharts.com/highcharts.js"></script>
+  <script src="https://code.highcharts.com/modules/exporting.js"></script>
+  <script src="https://code.highcharts.com/modules/export-data.js"></script>
 
-  <link href="bootstrap/bootstrap.min.css" rel="stylesheet"
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
     integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
-  <script src="bootstrap/bootstrap.bundle.min.js"
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
     integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
     crossorigin="anonymous"></script>
   <script src="pffft/pffft.js" defer></script>
@@ -137,15 +137,15 @@
         <div class="form-check">
           <input class="form-check-input" type="radio" name="AmplitudeUnit" id="useSPL"
             onchange='handleAmplitudeUnitSwitch(this);'>
-          <label class="form-check-label" for="usePascal">
+          <label class="form-check-label" for="useSPL">
             Darstellung als Schalldruckpegel [db(SPL)]
           </label>
         </div>
         <div class="form-check">
           <input class="form-check-input" type="radio" name="AmplitudeUnit" id="useDbG"
             onchange='handleAmplitudeUnitSwitch(this);'>
-          <label class="form-check-label" for="usePascal">
-            Darstellung als A-Bewerteter Schalldruckpegel [db(G)]
+          <label class="form-check-label" for="useDBG">
+            Darstellung als G-Bewerteter Schalldruckpegel [db(G)]
           </label>
         </div>
       </form>
