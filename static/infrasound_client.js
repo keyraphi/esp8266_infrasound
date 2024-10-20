@@ -7,6 +7,11 @@ let number_of_new_measurements = 0;
 let computeTotalNoise = null;
 let computeSpectrumFromSquaredMagnitudes = null;
 
+// options for showing or hiding elements
+let isTimeSeriesShown = true;
+let isSpectrumShown = false;
+let isSpectrogramShown = false;
+
 pffft_module = null;
 pffft().then(function(Module) {
   console.log("PFFFT Module initialized");
@@ -185,13 +190,15 @@ function updateCharts() {
   index_buffer = index_buffer.slice(-15000);
 
   // Update data in time chart
-  chart_data_time = times_buffer.slice(-chartTimeSeriesDuration);
-  chart_data_preassure = measurement_buffer.slice(-chartTimeSeriesDuration);
-  chart_data = chart_data_time.map(function(val, idx) {
-    return [val, chart_data_preassure[idx]];
-  });
-  chartTimeSeries.series[0].setData(chart_data, false, false, false);
-  chartTimeSeries.update({}, true, false, false);
+  if (isTimeSeriesShown) {
+    chart_data_time = times_buffer.slice(-chartTimeSeriesDuration);
+    chart_data_preassure = measurement_buffer.slice(-chartTimeSeriesDuration);
+    chart_data = chart_data_time.map(function(val, idx) {
+      return [val, chart_data_preassure[idx]];
+    });
+    chartTimeSeries.series[0].setData(chart_data, false, false, false);
+    chartTimeSeries.update({}, true, false, false);
+  }
 
   const fft_window = 2 ** document.getElementById("spectrumRange").value;
   let fft_time_sequence = Array.from(measurement_buffer.slice(-fft_window));
@@ -217,6 +224,7 @@ function updateCharts() {
     const hz = (i * 50.0) / fft_time_sequence.length;
     frequencies[i] = hz;
   }
+  // Spectrogram should always be updated, otherwise there will be disconituities whenever it is hidden
   updateSpectrogram(
     spectrum,
     times_buffer[times_buffer.length - 1],
@@ -227,13 +235,15 @@ function updateCharts() {
   totalNoise = computeTotalNoise(frequencies, spectrum);
   setTotalNoise(totalNoise);
 
-  const spectrumChartData = [];
-  for (let i = 0; i < scaled_spectrum.length; i++) {
-    spectrumChartData[i] = [frequencies[i], scaled_spectrum[i]];
+  if (isSpectrumShown) {
+    const spectrumChartData = [];
+    for (let i = 0; i < scaled_spectrum.length; i++) {
+      spectrumChartData[i] = [frequencies[i], scaled_spectrum[i]];
+    }
+    chartSpectrum.series[0].setData(spectrumChartData, false, false, false);
+    chartSpectrum.series[1].setData(spectrumChartData, false, false, false);
+    chartSpectrum.update({}, true, false, false);
   }
-  chartSpectrum.series[0].setData(spectrumChartData, false, false, false);
-  chartSpectrum.series[1].setData(spectrumChartData, false, false, false);
-  chartSpectrum.update({}, true, false, false);
 }
 
 // load the start-timestamp
@@ -370,19 +380,6 @@ document.getElementById("spectrumRange").oninput = function() {
 // By default use linear spectrum and hide line chart
 chartSpectrum.series[0].hide();
 
-// Spectrum logarithmic
-function handleSpectrumLogSwitch(checkbox) {
-  if (checkbox.checked) {
-    console.log("Spectrum Log enabled");
-    chartSpectrum.xAxis[0].update({ type: "logarithmic" });
-    chartSpectrum.series[0].show();
-  } else {
-    console.log("Spectrum Log disabled");
-    chartSpectrum.xAxis[0].update({ type: "linear" });
-    chartSpectrum.series[0].hide();
-  }
-}
-
 function computeTotalRMS(frequencies, spectrum) {
   let rms = 0.0;
   rms = spectrum
@@ -516,9 +513,9 @@ function handleAmplitudeUnitSwitch(radio) {
   switch (choice) {
     case "usePa": {
       const totalTitleLabel = document.getElementById("totalTitleLabel");
-      totalTitleLabel.innerText = "Effektivwert des Schalldrucks:";
+      totalTitleLabel.innerText = "Effektivwert des Schalldrucks (RMS):";
       const totalUnit = document.getElementById("totalUnit");
-      totalUnit.innerText = "Pascal (Pa)";
+      totalUnit.innerText = "(Pa)";
       const infoRMS = document.getElementById("infoRMS");
       const infoSPL = document.getElementById("infoSPL");
       const infoDBG = document.getElementById("infoDBG");
@@ -573,6 +570,45 @@ function handleAmplitudeUnitSwitch(radio) {
     default: {
       console.log("WARNING: got unexpected choice for amplitude unit", choice);
     }
+  }
+}
+
+function handleIsTimeSeriesShownSwitch(checkbox) {
+  isTimeSeriesShown = checkbox.checked;
+  console.log("Visibility of time series:", isTimeSeriesShown);
+  const timeSeriesContainer = document.getElementById("TimeSeriesContainer");
+  if (isTimeSeriesShown) {
+    // timeSeriesContainer.style.removeProperty("Visibility");
+    timeSeriesContainer.style.removeProperty("display");
+  } else {
+    // timeSeriesContainer.style.visibility = "hidden";
+    timeSeriesContainer.style.display = "none";
+  }
+}
+
+function handleIsSpectrumShownSwitch(checkbox) {
+  isSpectrumShown = checkbox.checked;
+  console.log("Visibility of Spectrum:", isSpectrumShown);
+  const spectrumContainer = document.getElementById("SpectrumContainer");
+  if (isSpectrumShown) {
+    // spectrumContainer.style.removeProperty("visibility");
+    spectrumContainer.style.removeProperty("display");
+  } else {
+    // spectrumContainer.style.visibility = "hidden";
+    spectrumContainer.style.display = "none";
+  }
+}
+
+function handleIsSpectrogramShownSwitch(checkbox) {
+  isSpectrogramShown = checkbox.checked;
+  console.log("Visibility of Spectrum:", isSpectrumShown);
+  const spectrogramContainer = document.getElementById("SpectrogramContainer");
+  if (isSpectrogramShown) {
+    // spectrogramContainer.style.removeProperty("visibility");
+    spectrogramContainer.style.removeProperty("display");
+  } else {
+    // spectrogramContainer.style.visibility = "hidden";
+    spectrogramContainer.style.display = "none";
   }
 }
 
@@ -943,7 +979,7 @@ void main() {
     value = clamp(value, save_min_value, maxValue);
   } else if (uRenderMode == 2) {
     value = computeDBG(value, frequency);
-    maxValue = computeDBG(maxValue, 20);
+    maxValue = computeDBG(maxValue, 20.0);
     minValue = computeDBG(minValue, 0.1);
     // Make sure min value is not -inf if an amplitude ever really gets 0
     save_min_value = max(minValue, -120.0);

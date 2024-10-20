@@ -98,62 +98,83 @@
         </div>
         <div id="totalUnitExplanationDBG" class="collapse">
           <div class="card card-body">
-              TODO
+            TODO
           </div>
         </div>
       </div>
-      <div id="infrasound-time-serie" class="container"></div>
-
-      <form>
-        <div class="mb-3">
-          <label id="timeSeriesRangeIndicator" for="timeSeriesRange" class="form-label">Dargestellte
-            Zeitspanne</label>
-          <input type="range" class="form-range" min="250" max="15000" step="50" id="timeSeriesRange">
-        </div>
-      </form>
-
-      <div id="infrasound-spectrum" class="container"></div>
-      <form>
-        <div class="mb-3">
-          <label id="SpectrumRangeIndicator" for="spectrumRange" class="form-label">Spektrum Analyse
-            Dauer</label>
-          <input type="range" class="form-range" min="5" max="12" step="1" id="spectrumRange">
+      <div class="container">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="isTimeseriesShown" checked
+            onchange='handleIsTimeseriesShownSwitch(this);'>
+          <label class="form-check-label" for="isTimeseriesShown">Rohe Messung</label>
         </div>
         <div class="form-check form-switch">
-          <input class="form-check-input" type="checkbox" value="" id="isSpectrumLogarithmic"
-            onchange='handleSpectrumLogSwitch(this);'>
-          <label class="form-check-label" for="isSpectrumLogarithmic">
-            Frequenzen Logarithmisch darstellen
-          </label>
+          <input class="form-check-input" type="checkbox" id="isSpectrumShown"
+            onchange='handleIsSpectrumShownSwitch(this);'>
+          <label class="form-check-label" for="isSpectrumShown">Spectrum</label>
         </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="isSpectrogramShown"
+            onchange='handleIsSpectrogramShownSwitch(this);'>
+          <label class="form-check-label" for="flexSwitchCheckDisabled">Spectrogram</label>
+        </div>
+      </div>
 
-        <div class="form-check">
-          <input class="form-check-input" type="radio" name="AmplitudeUnit" id="usePa" checked
-            onchange='handleAmplitudeUnitSwitch(this);'>
-          <label class="form-check-label" for="usePascal">
-            Darstellen in Pascal [Pa]
-          </label>
-        </div>
-        <div class="form-check">
-          <input class="form-check-input" type="radio" name="AmplitudeUnit" id="useSPL"
-            onchange='handleAmplitudeUnitSwitch(this);'>
-          <label class="form-check-label" for="useSPL">
-            Darstellung als Schalldruckpegel [db(SPL)]
-          </label>
-        </div>
-        <div class="form-check">
-          <input class="form-check-input" type="radio" name="AmplitudeUnit" id="useDbG"
-            onchange='handleAmplitudeUnitSwitch(this);'>
-          <label class="form-check-label" for="useDBG">
-            Darstellung als G-Bewerteter Schalldruckpegel [db(G)]
-          </label>
-        </div>
+      <div class="container" id="TmeSeriesContainer">
+        <div id="infrasound-time-serie"> </div>
+        <form>
+          <div class="mb-3">
+            <label id="timeSeriesRangeIndicator" for="timeSeriesRange" class="form-label">Dargestellte
+              Zeitspanne</label>
+            <input type="range" class="form-range" min="250" max="15000" step="50" id="timeSeriesRange">
+          </div>
+        </form>
+      </div>
+
+      <div class="container" id="SpectrumContainer" style="display: none;">
+        <div id="infrasound-spectrum" class="container"></div>
+        <form>
+          <div class="mb-3">
+            <label id="SpectrumRangeIndicator" for="spectrumRange" class="form-label">Spektrum Analyse
+              Dauer</label>
+            <input type="range" class="form-range" min="5" max="12" step="1" id="spectrumRange">
+          </div>
+      </div>
+
+
+      <div id="spectrumOptions" class="container"">
+        <div class=" form-check">
+        <input class="form-check-input" type="radio" name="AmplitudeUnit" id="usePa" checked
+          onchange='handleAmplitudeUnitSwitch(this);'>
+        <label class="form-check-label" for="usePascal">
+          Darstellen in Pascal [Pa]
+        </label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="AmplitudeUnit" id="useSPL"
+          onchange='handleAmplitudeUnitSwitch(this);'>
+        <label class="form-check-label" for="useSPL">
+          Darstellung als Schalldruckpegel [db(SPL)]
+        </label>
+      </div>
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="AmplitudeUnit" id="useDbG"
+          onchange='handleAmplitudeUnitSwitch(this);'>
+        <label class="form-check-label" for="useDBG">
+          Darstellung als G-Bewerteter Schalldruckpegel [db(G)]
+        </label>
+      </div>
       </form>
     </div>
-    <div id="SpectrogramDiv" class="mb-2 mt-2" style="position: relative;">
-      <canvas id="webglCanvas" style="position: absolute; top: 0; left:0;"></canvas>
-      <canvas id="labelCanvas" style="position: absolute; top: 0; left:0;"></canvas>
+
+    <div id="SpectrogramContainer" class="container" style="display: none;">
+      <div id="SpectrogramDiv" class="mb-2 mt-2" style="position: relative;">
+        <canvas id="webglCanvas" style="position: absolute; top: 0; left:0;"></canvas>
+        <canvas id="labelCanvas" style="position: absolute; top: 0; left:0;"></canvas>
+      </div>
     </div>
+  </div>
+
   </div>
 </body>
 
