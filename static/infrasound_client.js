@@ -1,6 +1,6 @@
 let start_timestamp = 0;
 const ms_between_measurements = 20;
-const spectrumUpdateFrequency = 10;
+const spectrumUpdateInterval = 10;
 
 let number_of_new_measurements = 0;
 
@@ -241,14 +241,14 @@ function updateCharts() {
   if (last_index - last_index_in_spectrogram > fft_window * (1 - spectrogram_overlap_fraction)) {
     console.log("Updating spectrogram");
     last_index_in_spectrogram = last_index;
-    var update_frequency = fft_window * (1 - spectrogram_overlap_fraction) * 50;
+    var update_interval = fft_window * spectrogram_overlap_fraction * 50;
     if (spectrogram_overlap_fraction >= 1) {
-      update_frequency = 50 * spectrumUpdateFrequency;
+      update_interval = 50 * spectrumUpdateInterval;
     }
     updateSpectrogram(
       spectrum,
       times_buffer[times_buffer.length - 1],
-      update_frequency,
+      update_interval,
     );
   }
 
@@ -345,7 +345,7 @@ function setupEventListener() {
       index_buffer.push(new_index);
       number_of_new_measurements += 1;
 
-      if (number_of_new_measurements > spectrumUpdateFrequency) {
+      if (number_of_new_measurements > spectrumUpdateInterval) {
         updateCharts();
         number_of_new_measurements = 0;
       }
