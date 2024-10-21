@@ -3,12 +3,36 @@
 ## Hardware
 
 ### Bauteile
-- D1 Mini
-- D1 Mini Pro
-- SD-Card-Reader
-- SDP ...
+- Sensirion SDP600-25Pa Differenzdrucksensor
+- D1 Mini (ESP8266, Micro-USB)
+- D1 Mini Pro (ESP8266, Micro-USB, ext. WiFI-Antenne)
+- SD-Card Kartenmodul für Arduino
+- edi-tronic ABS Leergehäuse IP66 oder Bopla ET-215
+- sonstiges: Jumper Wire, SD-Karte, Kabelverschraubung M12+M16, Stiftleiste zweireihig
 
 ### Verdrahtung
+SDP600-25 | D1 Mini 
+--------- | -------- 
+Data    | D2   
+Gnd     | Gnd
+VDD 3V3 | 3V3   
+Clk     | D1
+
+D1 Mini | D1 Mini pro
+------- | -------- 
+Gnd   | Gnd   
+5V    | 5V
+D5    | D2/Tx   
+D6    | D1/Rx
+
+D1 Mini pro | SD Card Reader
+----------- | -------- 
+Gnd     | Gnd   
+3V3     | 3V3
+D5/SCLK | CLK
+D6/MISO | MISO
+D7/MOSI | MOSI
+D8/CS   | CS   
 
 ## Software
 Der D1 Mini ist eine kleine Platine mit einem ESP8266 Microcontroller.
