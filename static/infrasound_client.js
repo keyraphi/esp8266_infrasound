@@ -241,14 +241,14 @@ function updateCharts() {
   if (last_index - last_index_in_spectrogram > fft_window * (1 - spectrogram_overlap_fraction)) {
     console.log("Updating spectrogram");
     last_index_in_spectrogram = last_index;
-    var update_interval = fft_window * spectrogram_overlap_fraction * 50;
+    var update_interval_ms = fft_window * spectrogram_overlap_fraction * ms_between_measurements;
     if (spectrogram_overlap_fraction >= 1) {
-      update_interval = 50 * spectrumUpdateInterval;
+      update_interval_ms = ms_between_measurements * spectrumUpdateInterval;
     }
     updateSpectrogram(
       spectrum,
       times_buffer[times_buffer.length - 1],
-      update_interval,
+      update_interval_ms,
     );
   }
 
@@ -1049,7 +1049,7 @@ void main() {
 
 initWebGLSpectrogramogram();
 
-function updateSpectrogram(newSpectrum, currentTime, updateIntervals) {
+function updateSpectrogram(newSpectrum, currentTime, updateIntervals_ms) {
   if (!gl) {
     console.warn("No webgl available - I won't update the spectrogram");
     return;
@@ -1058,7 +1058,7 @@ function updateSpectrogram(newSpectrum, currentTime, updateIntervals) {
 
   renderSpectrogram(minDbG, maxDbG);
 
-  updateSpectrogramLabels(currentTime, updateIntervals);
+  updateSpectrogramLabels(currentTime, updateIntervals_ms);
   updateColormap(ringbuffer.min, ringbuffer.max, minDbG, maxDbG);
 }
 function computeColorFromValue(value) {
@@ -1164,7 +1164,7 @@ function updateColormap(minPa, maxPa, minDbG, maxDbG) {
 }
 
 
-function updateSpectrogramLabels(currentTime, updateIntervals) {
+function updateSpectrogramLabels(currentTime, updateIntervals_ms) {
   const labelCanvas = document.getElementById("labelCanvas");
   const ctx = labelCanvas.getContext("2d");
   ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
@@ -1207,7 +1207,7 @@ function updateSpectrogramLabels(currentTime, updateIntervals) {
   // draw x-axis labels (time)
   const startTime = new Date(currentTime);
   const endTime = new Date(
-    startTime.getTime() - updateIntervals * labelCanvas.width,
+    startTime.getTime() - updateIntervals_ms * labelCanvas.width,
   );
   for (let i = 0; i <= numXLabels; i++) {
     const x = labelCanvas.width * (1 - i / numXLabels);
