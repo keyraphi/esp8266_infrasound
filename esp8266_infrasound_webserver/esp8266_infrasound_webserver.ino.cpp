@@ -458,41 +458,9 @@ void onStaticFile(AsyncWebServerRequest *request) {
 
 void onIndex(AsyncWebServerRequest *request) {
   String RedirectUrl = "http://";
-  if (ON_STA_FILTER(request)) {
-    RedirectUrl += WiFi.localIP().toString();
-    RedirectUrl += "/index.html";
-  } else {
-    RedirectUrl += WiFi.softAPIP().toString();
-    RedirectUrl += "/wifi.html";
-  }
+  RedirectUrl += WiFi.localIP().toString();
+  RedirectUrl += "/index.html";
   request->redirect(RedirectUrl);
-}
-
-void onPostWifi(AsyncWebServerRequest *request) {
-  cout << "/set_wifi credentials were sent" << endl;
-  int params = request->params();
-  for (int i = 0; i < params; i++) {
-    AsyncWebParameter *p = request->getParam(i);
-    if (p->isPost()) {
-      if (p->name() == "ssid") {
-        ssid = p->value();
-      } else if (p->name() == "password") {
-        password = p->value();
-      }
-    }
-  }
-  if (ssid.length() == 0) {
-    cout << "SSID length is 0... ignoring data" << endl;
-    request->send(200);
-    return;
-  }
-  if (write_wifi_credentials()) {
-    cout << "WiFi credentials successfully updated ... restarting" << endl;
-    ESP.restart();
-  } else {
-    cout << "Couldn't write WiFi credentials" << endl;
-    request->send(200);
-  }
 }
 
 void onConnect(AsyncEventSourceClient *client) {
@@ -544,7 +512,6 @@ void initWebserver() {
   server.on("/", HTTP_GET, onIndex);
   server.on("/index.html", HTTP_GET, onStaticFile);
   server.on("/downloads.html", HTTP_GET, onStaticFile);
-  server.on("/wifi.html", HTTP_GET, onStaticFile);
   server.on("/download_client.js", HTTP_GET, onStaticFile);
   server.on("/infrasound_client.js", HTTP_GET, onStaticFile);
   server.on("/favicon.ico", HTTP_GET, onStaticFile);
@@ -562,8 +529,6 @@ void initWebserver() {
   server.on("/downloads", HTTP_GET, onGetDownloads);
   cout << "serving /download" << endl;
   server.on("/download", HTTP_GET, onDownload);
-  cout << "serving /set_wifi" << endl;
-  server.on("/set_wifi", HTTP_POST, onPostWifi);
   cout << "serving /start_timestamp" << endl;
   server.on("/start_timestamp", HTTP_GET, onStartTimestamp);
   cout << "serving /start_measurements" << endl;
@@ -733,9 +698,12 @@ void setup() {
              << endl;
         if (write_wifi_credentials() && initWifi()) {
           cout << "Successfully connected to " << ssid << endl;
-          cout << "This WiFi is now saved and will automatically be connected from now on." << endl;
+          cout << "This WiFi is now saved and will automatically be connected "
+                  "from now on."
+               << endl;
         } else {
-          cout << "Failed to connect. Restarting to give you another chance." << endl;
+          cout << "Failed to connect. Restarting to give you another chance."
+               << endl;
           ESP.restart();
         }
       } else {
