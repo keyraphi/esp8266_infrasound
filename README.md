@@ -166,7 +166,7 @@ Schalldruckpegel](https://pub.dega-akustik.de/DAGA_2021/data/articles/000511.pdf
 dargestellt werden mit der Einheit dB(G). Die typische Wahrnehmungsschwelle für
 G-Bewerteten Schalldruckpegel liegt bei 95 db(G) - 100 db(G) mit einer
 Standardabweichung von etwa 5 dB(G). Es sind keine Fälle bekannt wo Menschen
-Schalldruckpegel unterhalb von 85 dB(G) wahrnehmen konnten. 
+Schalldruckpegel unterhalb von 85 dB(G) wahrnehmen konnten. Für details der Standardisierung siehe [ISO-7196-1995.pdf](ISO-7196-1995.pdf).
 3. Dauerschallpegel: Ganz oben wird der Dauerschallpegel, sprich die Gesammtlautstärke des Signals über den Analysezeitraum angezeigt - je nach option in Pa (RMS), dB(SPL) oder db(G).  
 4. Spektrogram: Das Spektrogram zeigt eine Farblich kodierte Historie über alle Spektren an, die auf die Breite der Seite passen. Die neusten Spektren werden rechts eingeführt und wandern langsam nach links. Wenn dB(G) als Darstellungsmodus gewählt wurde ist der Wertebereich für die Farbkodierung fixiert zwischen 0 dB(G) und 100 dB(G).
 
