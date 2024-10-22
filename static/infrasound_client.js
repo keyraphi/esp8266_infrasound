@@ -5,7 +5,7 @@ const spectrumUpdateInterval = 10;
 let number_of_new_measurements = 0;
 
 let last_index_in_spectrogram = -1;
-let spectrogram_overlap_fraction = 0.9;
+let spectrogram_overlap_fraction = 0.5;
 
 // min and max value in color range for db(G)
 const minDbG = 0;
