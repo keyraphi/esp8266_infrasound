@@ -20,8 +20,10 @@
 
 EspSoftwareSerial::UART esp_serial;
 
-String ssid;
-String password;
+bool is_ssid_input_required;
+bool is_password_input_required;
+String ssid = "no_wifi";
+String password = "";
 AsyncWebServer server(80);
 AsyncEventSource events("/measurement_events");
 
@@ -37,7 +39,7 @@ FsFile measurement_file;
 // Printing and reading from USB with cout and cin
 ArduinoOutStream cout(Serial);
 // input buffer for line
-char cinBuf[32];
+char cinBuf[128];
 ArduinoInStream cin(Serial, cinBuf, sizeof(cinBuf));
 
 // Some global variables to enable or disable features based on connected
@@ -575,20 +577,7 @@ void initWebserver() {
   server.begin();
 }
 
-void configureAccessPoint() {
-  while (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
-    cout << "Failed - trying again" << endl;
-  }
-  cout << "Setting up access point 'infrasound-sensor'" << endl;
-  while (!WiFi.softAP("infrasound-sensor")) {
-    cout << "Failed - trying again" << endl;
-  }
-  cout << "Access point was set up." << endl;
-  cout << "SSID: 'infrasound-sensor', no password, IP-Address:"
-       << WiFi.softAPIP().toString() << endl;
-}
-
-void initWifi() {
+bool initWifi() {
   // Try loading wifi credentials
   bool successfully_read_wifi_credentials = load_wifi_credentials();
   if (successfully_read_wifi_credentials) {
@@ -598,10 +587,8 @@ void initWifi() {
   }
   if (WiFi.waitForConnectResult() != WL_CONNECTED) {
     cout << "Failed to connect to: " << ssid << endl;
-    cout << "Configuring own Network Access Point" << endl;
-    configureAccessPoint();
     is_wifi_client = false;
-    return;
+    return false;
   }
   cout << "IP Address: " << WiFi.localIP().toString() << endl;
   is_wifi_client = true;
@@ -712,17 +699,20 @@ void setup() {
     cout << "Trying again" << endl;
   }
 
+  is_measurement_running = true;
+
   // init wifi
-  initWifi();
+  is_ssid_input_required = initWifi();
+  is_password_input_required = is_ssid_input_required;
   // init time
   if (is_wifi_client) {
     initTimestamp();
-  }
-
-  is_measurement_running = true;
 
   // Setup Webserver
   initWebserver();
+  } else {
+    cout << "No WIFI connection! Please type in the SSID (name) of your WiFi." << endl;
+  }
 }
 
 bool openMeasurementFileAppending() {
@@ -854,6 +844,29 @@ void loop() {
       // Let clients know about the new measurements and write everything new to
       // the event socket and file
       handleNewMeasurements();
+    }
+  }
+  if (is_ssid_input_required) {
+    // read the ssid from serial
+    if (esp_serial.available() >= 1) {
+      cin >> ssid;
+      is_ssid_input_required = false;
+      cout << "Please type in password for " << ssd << endl;
+    }
+  } else if (is_password_input_required) {
+    if (esp_serial.available() >= 1) {
+      cin >> password;
+      is_password_input_required = false;
+      cout << "Password was set - trying to connect to " << ssid << endl;
+      is_ssid_input_required = initWifi();
+      is_password_input_required = is_ssid_input_required;
+      if (!is_ssid_input_required) {
+        write_wifi_credentials();
+        cout << "WiFi credentials successfully updated ... restarting" << endl;
+        ESP.restart();
+      } else {
+        cout << "Try again. Please provide SSID (name) of your WiFi" << endl;
+      }
     }
   }
 }
