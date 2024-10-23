@@ -541,7 +541,7 @@ void initWebserver() {
   server.on("/index.html", HTTP_GET, onStaticFile);
   server.on("/analyse.html", HTTP_GET, onStaticFile);
   server.on("/wifi.html", HTTP_GET, onStaticFile);
-  server.on("/download_client.js", HTTP_GET, onStaticFile);
+  server.on("/analyse_client.js", HTTP_GET, onStaticFile);
   server.on("/infrasound_client.js", HTTP_GET, onStaticFile);
   server.on("/favicon.ico", HTTP_GET, onStaticFile);
   server.on("/pffft/pffft.js", HTTP_GET, onStaticFile);

@@ -6,6 +6,38 @@ pffft().then(function(Module) {
   pffft_module = Module;
 });
 
+const chartSoundPressureOverTime = new Highcharts.Chart({
+  chart: {
+    renderTo: "soundpressure-over-time",
+    animation: false,
+  },
+  title: { text: "Lautstärke über Dauer der Messung" },
+  series: [
+    {
+      showInLegend: false,
+      data: [],
+    },
+  ],
+  plotOptions: {
+    line: {
+      dataLabels: { enabled: false },
+    },
+    series: {
+      color: "#059e8a",
+    },
+  },
+  xAxis: {
+    type: "linear",
+    title: { text: "seconds" },
+    gridLineWidth: 1,
+  },
+  yAxis: {
+    title: { text: "Schallpegel [dB(G)]" },
+    gridLineWidth: 1,
+  },
+  credits: { enabled: false },
+});
+
 function showDownloadOptions(downloadOptions) {
   downloadList = document.getElementById("download-list");
   for (let i = 0; i < downloadOptions["files"].length; i++) {
@@ -138,7 +170,7 @@ async function processChunkedResponse(response) {
   console.log("Download finished... starting analysis");
   setProgressbar(0, "No work pending");
   // Create measurement Analyzer
-  measurementAnalyzer = new measurementAnalyzer(measurementData);
+  measurementAnalyzer = new MeasurementAnalyzer(measurementData);
 }
 
 function setProgressbar(value, label) {
@@ -154,9 +186,17 @@ class MeasurementAnalyzer {
   constructor(time_sequence) {
     this.sequence = time_sequence;
     this.fft_window_size = 1024;
+    if (pffft_runner) {
+      cleanup_pffft();
+    }
+    initialize_pffft(this.fft_window_size);
+
     this.startIdx = 0;
     this.endIdx = time_sequence.length;
-    this.spectrogram = new Spectrogram(this.fft_window_size, width); // TODO get width from canvas
+    this.spectrogram = new Spectrogram(this.fft_window_size); // TODO get width from canvas
+    // TODO make sure the number is correct
+    this.durationSeconds = linspace(0, time_sequence.length * 20, Math.floor(time_sequence.length / this.spectrogram.width));
+    this.totalSoundPressureLevels = new Float32Array(this.durationSeconds.length);
     // Run intial analysis
     this.analyze(this.startIdx, this.endIdx);
   }
@@ -167,13 +207,13 @@ class MeasurementAnalyzer {
 
   async analyze(startIdx, endIdx) {
     const samplesToAnalyze = Math.max(endIdx - startIdx, 0);
-    const stride = Math.floor(samplesToAnalyze / this.spectrogram_width);
+    const stride = Math.floor(samplesToAnalyze / this.spectrogram.width);
     // center the fft window at each selected sapmle and compute a spectrum
     // TODO embarisingly parallel -> multithread?
-    for (let i = 0; i < this.spectrogram_width; i++) {
+    for (let i = 0; i < this.spectrogram.width; i++) {
       // show progress
       const progress = 100 * i / this.spectrogram.width;
-      setProgressbar(progress, "Computing Spectra");
+      setProgressbar(progress, "Anayzing");
       // index of center measurement
       const sample_idx = startIdx + i * stride;
       // span window around that center
@@ -209,8 +249,10 @@ class MeasurementAnalyzer {
 
 
       const spectrum = fourier_transform(fft_time_sequence);
+      // update spectrogram
       this.spectrogram.setSpectrum(i, spectrum);
-
+      // set sound pressure level value in chart
+      this.setSoundpressure(i, spectrum);
     }
     this.startIdx = startIdx;
     this.endIdx = endIdx;
@@ -218,23 +260,44 @@ class MeasurementAnalyzer {
     setProgressbar(0, "No work pending");
   }
 
+  setSoundpressure(index, spectrum) {
+    const frequencies = linspace(0, 25, spectrum.length);
+    console.log("DEBUG: frequencies:", frequencies);
+    console.log("DEBUG: spectrum:", spectrum);
+    const totalSoundPressureLevel = computeTotalDBG(frequencies, spectrum);
+    console.log("DEBUG: totalSoundPressureLevel:", totalSoundPressureLevel);
+    this.totalSoundPressureLevels[index] = totalSoundPressureLevel;
+
+    // TODO don't always do this it might be quite slow
+    const chart_data = [];
+    for (let i=0; i < this.durationSeconds.length; i++) {
+      chart_data.push([this.durationSeconds[i], this.totalSoundPressureLevels[i]]);
+    }
+    console.log("DEBUG: updating chart with this data", chart_data);
+    chartSoundPressureOverTime.series[0].setData(chart_data, false, false, false);
+    chartSoundPressureOverTime.update({}, true, false, false);
+  }
+
   setFFTWindowSize(fft_window_size) {
+    // Get spectrum for the selected samples
     this.fft_window_size = fft_window_size;
     this.spectrogram.setFFTWindowSize(fft_window_size);
+    cleanup_pfft();
+    initialize_pffft(this.fft_window_size);
     this.analyze();
   }
 }
 
 class Spectrogram {
-  constructor(fft_window_size, width) {
-    this.width = width;
+  constructor(fft_window_size) {
+    this.width = document.getElementById("SpectrogramContainer").offsetWidth;
     this.total_frequency_steps = fft_window_size / 2;
-    this.frequencies_without_constant = this.total_frequency_steps - 1;
 
     // create webgl texture for holding the ata
     const canvas = document.getElementById("webglCanvas");
     this.gl = canvas.getContext("webgl2");
     this.texture = this.gl.createTexture();
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
     this.gl.texParameteri(
       this.gl.TEXTURE_2D,
       this.gl.TEXTURE_MIN_FILTER,
@@ -257,10 +320,10 @@ class Spectrogram {
     );
     // initialize the texture with zeros
     this.allocateTexture();
-    this.columnMax = new Float32Array(width).fill(Number.NEGATIVE_INFINITY);
-    this.columnMin = new Float32Array(width).fill(Number.POSITIVE_INFINITY);
-    this.columnMaxIdx = new Int32Array(width);
-    this.columnMinIdx = new Int32Array(width);
+    this.columnMax = new Float32Array(this.width).fill(Number.NEGATIVE_INFINITY);
+    this.columnMin = new Float32Array(this.width).fill(Number.POSITIVE_INFINITY);
+    this.columnMaxIdx = new Int32Array(this.width);
+    this.columnMinIdx = new Int32Array(this.width);
     this.max = Number.MIN_VALUE;
     this.min = Number.MAX_VALUE;
   }
@@ -282,32 +345,32 @@ class Spectrogram {
       columnIdx, // x-offset
       0, // y-offset
       1, // width of uploaded column
-      this.frequencies_without_constant, // height of column
+      this.total_frequency_steps, // height of column
       this.gl.RED, // format
       this.gl.FLOAT, // type
-      spectrum.slice(1), // data
+      spectrum, // data
     );
   }
 
   setFFTWindowSize(fft_window_size) {
     this.total_frequency_steps = fft_window_size / 2;
-    this.frequencies_without_constant = this.total_frequency_steps - 1;
     this.allocateTexture();
   }
 
   allocateTexture() {
-    // Resize texture
+    // allocating memory for texture
+    console.log("Allocating texture of size", this.width, this.total_frequency_steps);
     this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
-    const data = new Float32Array(this.width * this.frequencies_without_constant);
+    const data = new Float32Array(this.width * this.total_frequency_steps);
     this.gl.texImage2D(
-      gl.TEXTURE_2D,
+      this.gl.TEXTURE_2D,
       0,
-      gl.R32F,
+      this.gl.R32F,
       this.width,
       this.height,
       0,
-      gl.RED,
-      gl.FLOAT,
+      this.gl.RED,
+      this.gl.FLOAT,
       data,
     );
   }
@@ -329,6 +392,111 @@ class Spectrogram {
     this.minIdx = -1;
   }
 }
+
+// utilities
+function linspace(start, stop, num) {
+  const result = new Float32Array(num);
+  result[0] = start;
+  if (num === 1) {
+    return result;
+  }
+  result[result.length - 1] = stop;
+
+  step = (stop - start) / (num - 1);
+  for (let i = 1; i < num - 1; ++i) {
+    result[i] = start + step * i;
+  }
+  return result;
+}
+
+// Computing noise level
+function computeSPLSpectrum(frequencies, spectrum) {
+  const sqrt_2 = Math.sqrt(2);
+  const p_ref = 20e-6; // Reference value for SPL 20 micro pascal
+  return spectrum.map((value) => 20 * Math.log10(value / sqrt_2 / p_ref));
+}
+
+const gWeightingTable = [
+  { f: 0.25, gValue: -88 },
+  { f: 0.315, gValue: -80 },
+  { f: 0.4, gValue: -72.1 },
+  { f: 0.5, gValue: -64.3 },
+  { f: 0.63, gValue: -56.6 },
+  { f: 0.8, gValue: -49.5 },
+  { f: 1, gValue: -43 },
+  { f: 1.25, gValue: -37.5 },
+  { f: 1.6, gValue: -32.6 },
+  { f: 2.0, gValue: -28.3 },
+  { f: 2.5, gValue: -24.1 },
+  { f: 3.15, gValue: -20 },
+  { f: 4, gValue: -16 },
+  { f: 5, gValue: -12 },
+  { f: 6.3, gValue: -8 },
+  { f: 8, gValue: -4 },
+  { f: 10, gValue: 0 },
+  { f: 12.5, gValue: 4 },
+  { f: 16, gValue: 7.7 },
+  { f: 20, gValue: 9.0 },
+  { f: 25, gValue: 3.7 },
+];
+/**
+ * Function to compute the G-weighting for an arbitrary frequency using linear interpolation
+ * @param {number} f - The frequency for which to compute the G-weighting
+ * @returns {number} - The interpolated G-weighting value
+ */
+function GWeighting(f) {
+  // handle cases where f is outside the range
+  if (f < gWeightingTable[0].f) {
+    return gWeightingTable[0].gValue;
+  } else if (f > gWeightingTable[gWeightingTable.length - 1].f) {
+    return gWeightingTable[gWeightingTable.length - 1].gValue;
+  }
+
+  // interpolate between two nearest neigbours
+  // linear search because of low number of elements in list
+  for (let i = 0; i < gWeightingTable.length - 1; i++) {
+    const f_low = gWeightingTable[i].f;
+    const f_high = gWeightingTable[i + 1].f;
+
+    if (f >= f_low && f <= f_high) {
+      const g_low = gWeightingTable[i].gValue;
+      const g_high = gWeightingTable[i + 1].gValue;
+      return g_low + ((f - f_low) / (f_high - f_low)) * (g_high - g_low);
+    }
+  }
+}
+
+const gWeightingCache = {};
+
+function computeDBGSpectrum(frequencies, spectrum) {
+  const result_spectrum = computeSPLSpectrum(frequencies, spectrum);
+  if (!gWeightingCache[frequencies]) {
+    const gWeightings = new Array(frequencies.length);
+    for (let i = 0; i < frequencies.length; i++) {
+      gWeightings[i] = GWeighting(frequencies[i]);
+    }
+    gWeightingCache[frequencies] = gWeightings;
+  }
+  // retrieve precomputed aWeightings
+  const gWeightings = gWeightingCache[frequencies];
+
+  for (let i = 0; i < spectrum.length; i++) {
+    result_spectrum[i] = result_spectrum[i] + gWeightings[i];
+  }
+  return result_spectrum;
+}
+
+function computeTotalDBG(frequencies, spectrum) {
+  const dbg_spectrum = computeDBGSpectrum(frequencies, spectrum);
+  const linear_spectrum = dbg_spectrum.map((value) => 10 ** (value / 10));
+  const total_linear_perassure = linear_spectrum.reduce(
+    (sum, value) => sum + value,
+    0,
+  );
+  const result = 10 * Math.log10(total_linear_perassure);
+  return result;
+}
+
 
 // PFFFT STUFF
 let pffft_runner = null;
@@ -358,7 +526,29 @@ function initialize_pffft(fft_window) {
   dataHeap = new Uint8Array(pffft_module.HEAPU8.buffer, dataPtr, nDataBytes);
 }
 
+/**
+ * Function to compute the mean of a Float32Array using Kahan summation for numerical stability
+ * @param {Float32Array} data - The input array
+ * @returns {number} - The mean of the elements in the array
+ */
+function stableMeanOfFloat32Array(data) {
+  let sum = 0;
+  let compensation = 0; // This is the compensation term for lost low-order bits
+  const len = data.length;
+
+  for (let i = 0; i < len; i++) {
+    const y = data[i] - compensation; // Correct the next value
+    const t = sum + y; // Accumulate the corrected value
+    compensation = (t - sum) - y; // Compute the new compensation
+    sum = t; // Update the sum with the corrected value
+  }
+
+  return sum / len;
+}
+
 function fourier_transform(buffer) {
+  const mean = stableMeanOfFloat32Array(buffer);
+  buffer = buffer.map((value) => value - mean);
   // Copy data to Emscripten heap (directly accessed from Module.HEAPU8)
   dataHeap.set(new Uint8Array(buffer.buffer));
 
@@ -371,7 +561,7 @@ function fourier_transform(buffer) {
   let fft_squared_magnitudes = new Float32Array(
     dataHeap.buffer,
     dataHeap.byteOffset,
-    timeSequence.length,
+    buffer.length,
   );
   fft_squared_magnitudes = fft_squared_magnitudes.slice(
     0,
@@ -379,7 +569,7 @@ function fourier_transform(buffer) {
   );
 
   const scaled_magnitudes = fft_squared_magnitudes.map(
-    (value) => (2 * value ** 0.5) / timeSequence.length,
+    (value) => (2 * value ** 0.5) / buffer.length,
   );
 
   return scaled_magnitudes;
