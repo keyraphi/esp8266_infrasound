@@ -66,7 +66,7 @@ werden:
     - ESP8266TimerInterrupt
     - ESP8266TimerInterrupt
     - ESPAsyncTCP
-    - ESPAsyncWebserver
+    - ESPAsyncWebserver (ACHTUNG: von lacamera, getestet mit version 3.1.0)
     - TimerInterrupt
 
 ### Sensor
