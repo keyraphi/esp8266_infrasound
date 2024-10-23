@@ -539,7 +539,7 @@ void initWebserver() {
   cout << "Serving static files" << endl;
   server.on("/", HTTP_GET, onIndex);
   server.on("/index.html", HTTP_GET, onStaticFile);
-  server.on("/downloads.html", HTTP_GET, onStaticFile);
+  server.on("/analyse.html", HTTP_GET, onStaticFile);
   server.on("/wifi.html", HTTP_GET, onStaticFile);
   server.on("/download_client.js", HTTP_GET, onStaticFile);
   server.on("/infrasound_client.js", HTTP_GET, onStaticFile);
