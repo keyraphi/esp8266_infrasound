@@ -1,10 +1,15 @@
 var pffft_module = null;
-var measurementAnalyzer = null;
+var measurementAnalyser = null;
 
 pffft().then(function(Module) {
   console.log("PFFFT Module initialized");
   pffft_module = Module;
 });
+
+const fromSlider = document.querySelector('#fromSlider');
+const toSlider = document.querySelector('#toSlider');
+const fromInput = document.querySelector('#fromInput');
+const toInput = document.querySelector('#toInput');
 
 const chartSoundPressureOverTime = new Highcharts.Chart({
   chart: {
@@ -44,18 +49,18 @@ function showDownloadOptions(downloadOptions) {
     const labelDiv = document.createElement("div");
     const buttonGroupDiv = document.createElement("div");
     const downloadButton = document.createElement("button");
-    const analyzeButton = document.createElement("button");
+    const analyseButton = document.createElement("button");
     const fileName = downloadOptions["files"][i];
     labelDiv.textContent = fileName;
     downloadButton.classList.add("btn");
-    analyzeButton.classList.add("btn");
+    analyseButton.classList.add("btn");
     downloadButton.classList.add("btn-secondary");
-    analyzeButton.classList.add("btn-primary");
+    analyseButton.classList.add("btn-primary");
     buttonGroupDiv.classList.add("btn-group");
     buttonGroupDiv.setAttribute("role", "group");
     buttonGroupDiv.setAttribute("aria-label", "Button Group");
     buttonGroupDiv.appendChild(downloadButton);
-    buttonGroupDiv.appendChild(analyzeButton);
+    buttonGroupDiv.appendChild(analyseButton);
     const listDiv = document.createElement("div");
     const endpoint = "/download?&file=" + downloadOptions["files"][i];
     downloadButton.textContent = "Download";
@@ -65,12 +70,12 @@ function showDownloadOptions(downloadOptions) {
       downloadFile(endpoint);
     });
 
-    analyzeButton.addEventListener("click", (event) => {
+    analyseButton.addEventListener("click", (event) => {
       event.preventDefault();
       console.log("Downloading", endpoint, "for analysis");
-      downloadAndAnalyze(endpoint);
+      downloadAndAnalyse(endpoint);
     });
-    analyzeButton.textContent = "Analyze";
+    analyseButton.textContent = "Analyse";
     listDiv.classList.add("list-group-item");
     listDiv.classList.add("list-group-item-action");
     listDiv.classList.add("d-flex");
@@ -109,7 +114,7 @@ function downloadFile(endpoint) {
   window.open(endpoint);
 }
 
-function downloadAndAnalyze(endpoint) {
+function downloadAndAnalyse(endpoint) {
 
   setProgressbar(0, "Downloading");
   fetch(endpoint)
@@ -169,8 +174,9 @@ async function processChunkedResponse(response) {
 
   console.log("Download finished... starting analysis");
   setProgressbar(0, "No work pending");
-  // Create measurement Analyzer
-  measurementAnalyzer = new MeasurementAnalyzer(measurementData);
+  // Create measurement Analyser
+  measurementAnalyser = new MeasurementAnalyser(measurementData);
+
 }
 
 function setProgressbar(value, label) {
@@ -182,9 +188,10 @@ function setProgressbar(value, label) {
   progressbar.textContent = `${Math.round(value)}%`;
 }
 
-class MeasurementAnalyzer {
+class MeasurementAnalyser {
   constructor(time_sequence) {
     this.sequence = time_sequence;
+
 
     this.startIdx = 0;
     this.endIdx = time_sequence.length;
@@ -193,64 +200,76 @@ class MeasurementAnalyzer {
     // TODO make sure the number is correct
     this.durationSeconds = linspace(0, time_sequence.length * 20 / 1000, this.spectrogram.width);
     this.totalSoundPressureLevels = new Float32Array(this.durationSeconds.length);
+    this.previewSelectedRange = this.previewSelectedRange.bind(this);
+    this.initAnalysisRangeSelector();
     // Run intial analysis
-    this.analyze(this.startIdx, this.endIdx);
+    this.analyse(this.startIdx, this.endIdx);
   }
 
-  analyze(startIdx, endIdx) {
+  async analyse(startIdx, endIdx) {
     if (typeof startIdx == "undefined") { startIdx = this.startIdx; }
     if (typeof endIdx == "undefined") { endIdx = this.endIdx; }
-    const samplesToAnalyze = Math.max(endIdx - startIdx, 0);
-    const stride = samplesToAnalyze / this.spectrogram.width;
+    const samplesToAnalyse = Math.max(endIdx - startIdx, 0);
+    const stride = samplesToAnalyse / this.spectrogram.width;
     // center the fft window at each selected sapmle and compute a spectrum
-    // TODO embarisingly parallel -> multithread?
-    for (let i = 0; i < this.spectrogram.width; i++) {
-      // index of center measurement
-      const sample_idx = startIdx + Math.round(i * stride);
+    const analyseNextWindow = (i) => {
+      if (i < this.spectrogram.width) {
+        const progress = 100 * (i * stride) / (endIdx - startIdx);
+        setProgressbar(progress, "Anayzing");
 
-      const progress = 100 * (i * stride) / (endIdx - startIdx);
-      setProgressbar(progress, "Anayzing");
-      // span window around that center
-      let window_start_idx = sample_idx - this.fft_window_size / 2;
-      let window_end_idx = sample_idx + this.fft_window_size / 2;
-      // check if padding is necessary at the start or end of the window
-      var start_padding_size = 0;
-      var end_padding_size = 0;
-      if (window_start_idx < 0) {
-        start_padding_size = -window_start_idx;
-        window_start_idx = 0;
-      }
-      if (window_end_idx > this.sequence.length) {
-        end_padding_size = window_end_idx - this.sequence.length;
-        window_end_idx = this.sequence.length;
-      }
+        // index of center measurement
+        const sample_idx = startIdx + Math.round(i * stride);
+        // span window around that center of sample_idx
+        let window_start_idx = sample_idx - this.fft_window_size / 2;
+        let window_end_idx = sample_idx + this.fft_window_size / 2;
+        // check if padding is necessary at the start or end of the window
+        var start_padding_size = 0;
+        var end_padding_size = 0;
+        if (window_start_idx < 0) {
+          start_padding_size = -window_start_idx;
+          window_start_idx = 0;
+        }
+        if (window_end_idx > this.sequence.length) {
+          end_padding_size = window_end_idx - this.sequence.length;
+          window_end_idx = this.sequence.length;
+        }
 
-      // Slice the corresponding values from the sequence
-      var fft_time_sequence = null;
-      if (start_padding_size == 0 && end_padding_size == 0) {
-        fft_time_sequence = this.sequence.slice(window_start_idx, window_end_idx);
+        // Slice the corresponding values from the sequence
+        var fft_time_sequence = null;
+        if (start_padding_size == 0 && end_padding_size == 0) {
+          fft_time_sequence = this.sequence.slice(window_start_idx, window_end_idx);
+        } else {
+          // con the edges of the measurements create zero padding
+          const start_padding = new Float32Array(start_padding_size);
+          const end_padding = new Float32Array(end_padding_size);
+          const actual_values = this.sequence.slice(window_start_idx, window_end_idx);
+
+          fft_time_sequence = new Float32Array(start_padding_size + end_padding_size + actual_values.length);
+          fft_time_sequence.set(start_padding);
+          fft_time_sequence.set(actual_values, start_padding_size);
+          fft_time_sequence.set(end_padding, start_padding_size + actual_values.length);
+        }
+
+        const spectrum = fourier_transform(fft_time_sequence);
+        // update spectrogram
+        this.spectrogram.setSpectrum(i, spectrum);
+        this.spectrogram.render();
+        // set sound pressure level value in chart
+        this.setSoundpressure(i, spectrum);
+
+        setTimeout(() => {
+          // give controll back to event loop to draw the ui elements
+          // then analyse the next window
+          analyseNextWindow(i + 1);
+        }, 0);
       } else {
-        // con the edges of the measurements create zero padding
-        const start_padding = new Float32Array(start_padding_size);
-        const end_padding = new Float32Array(end_padding_size);
-        const actual_values = this.sequence.slice(window_start_idx, window_end_idx);
-
-        fft_time_sequence = new Float32Array(start_padding_size + end_padding_size + actual_values.length);
-        fft_time_sequence.set(start_padding);
-        fft_time_sequence.set(actual_values, start_padding_size);
-        fft_time_sequence.set(end_padding, start_padding_size + actual_values.length);
+        console.log('All windows analysed');
       }
-
-      const spectrum = fourier_transform(fft_time_sequence);
-      // update spectrogram
-      this.spectrogram.setSpectrum(i, spectrum);
-      this.spectrogram.render();
-      // set sound pressure level value in chart
-      this.setSoundpressure(i, spectrum);
     }
+    analyseNextWindow(0);
+
     this.startIdx = startIdx;
     this.endIdx = endIdx;
-
     setProgressbar(0, "No work pending");
   }
 
@@ -276,7 +295,65 @@ class MeasurementAnalyzer {
     initialize_pffft(this.fft_window_size);
   }
 
+  initAnalysisRangeSelector() {
+    fromSlider.min = 0;
+    fromSlider.max = this.sequence.length - 1;
+    fromSlider.value = 0;
+    fromInput.min = 0;
+    fromInput.max = this.sequence.length - 1;
+    fromInput.value = 0;
+    toSlider.min = 0;
+    toSlider.max = this.sequence.length - 1;
+    toSlider.value = this.sequence.length - 1;
+    toInput.min = 0;
+    toInput.max = this.sequence.length - 1;
+    toInput.value = this.sequence.length - 1;
+    controlFromSlider(fromSlider, toSlider, fromInput);
+    controlToSlider(fromSlider, toSlider, toInput);
+
+    fromSlider.addEventListener("input", this.previewSelectedRange);
+    toSlider.addEventListener("input", this.previewSelectedRange);
+    fromInput.addEventListener("input", this.previewSelectedRange);
+    toInput.addEventListener("input", this.previewSelectedRange);
+    // TODO add the confirm listener here
+  }
+
+  previewSelectedRange() {
+    const from = fromSlider.value;
+    const to = toSlider.value;
+
+    this.spectrogram.previewSelectedRange(this.startIdx, this.endIdx, from, to);
+  }
+
+  onAnalysisRangeChange() {
+    const startRange = document.getElementById('startRange');
+    const endRange = document.getElementById('endRange');
+    const minRange = 100; // Minimum range in indices
+
+    const rangeHighlight = document.querySelector('.range-highlight');
+    const startIdx = parseInt(startRange.value);
+    const endIdx = parseInt(endRange.value);
+
+    // Ensure the range is not smaller than minRange
+    if (endIdx - startIdx < minRange) {
+      if (endRange.value !== startRange.value) {
+        endRange.value = startIdx + minRange;
+      } else {
+        startRange.value = endIdx - minRange;
+      }
+    }
+
+    // Update the highlighted range between sliders
+    const startPercent = (startRange.value / startRange.max) * 100;
+    const endPercent = (endRange.value / endRange.max) * 100;
+    rangeHighlight.style.left = startPercent + '%';
+    rangeHighlight.style.width = (endPercent - startPercent) + '%';
+
+    // Call the provided function to display the measurements
+    this.analyse(startIdx, endIdx);
+  }
 }
+
 
 class Spectrogram {
   constructor(fft_window_size, total_duration) {
@@ -315,11 +392,21 @@ class Spectrogram {
     const width = document.getElementById("SpectrogramContainer").offsetWidth;
     this.setWidth(width);
 
-
     // draw Colormap
     this.drawColormap();
     this.render();
 
+    this.previewSelectedRange = this.previewSelectedRange.bind(this);
+  }
+
+  previewSelectedRange(startIdx, endIdx, from, to) {
+    console.log("DEBUG: Spectrogram.previewSelectedRange", startIdx, endIdx, from, to);
+    this.startIdx = startIdx;
+    this.endIdx = endIdx;
+    this.previewRangeFrom = from;
+    this.previewRangeTo = to;
+
+    this.renderLabels();
   }
 
   drawColormap() {
@@ -596,6 +683,10 @@ void main() {
     this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
 
     // render the labels on top
+    this.renderLabels();
+  }
+
+  renderLabels() {
     const labelCanvas = document.getElementById("labelCanvas");
     const ctx = labelCanvas.getContext("2d");
     ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
@@ -647,6 +738,20 @@ void main() {
       ctx.fillStyle = "black";
       ctx.font = "14px Arial";
       ctx.fillText(timeString, x - timeStringWidth, labelCanvas.height - 10);
+    }
+
+    // draw preview ranges
+    if (this.previewRangeFrom > this.startIdx) {
+      const idx2pixelScale = labelCanvas.width / (this.endIdx - this.startIdx);
+      const width = (this.previewRangeFrom - this.startIdx) * idx2pixelScale;
+      ctx.fillStyle = "rgba(200, 0, 0, 0.5)";
+      ctx.fillRect(0, 0, width, labelCanvas.height);
+    }
+    if (this.previewRangeTo < this.endIdx) {
+      const idx2pixelScale = labelCanvas.width / (this.endIdx - this.startIdx);
+      const start = (this.endIdx - this.previewRangeTo) * idx2pixelScale;
+      ctx.fillStyle = "rgba(200, 0, 0, 0.5)";
+      ctx.fillRect(labelCanvas.width - start, 0, labelCanvas.width - start, labelCanvas.height);
     }
   }
 
@@ -960,3 +1065,89 @@ function computeColorFromValue(value) {
   }
   return color;
 }
+
+
+// Range slider from https://medium.com/@predragdavidovic10/native-dual-range-slider-html-css-javascript-91e778134816
+function controlFromInput(fromSlider, fromInput, toInput, controlSlider) {
+  const [from, to] = getParsed(fromInput, toInput);
+  fillSlider(fromInput, toInput, '#C6C6C6', '#25daa5', controlSlider);
+  if (from > to) {
+    fromSlider.value = to;
+    fromInput.value = to;
+  } else {
+    fromSlider.value = from;
+  }
+}
+
+function controlToInput(toSlider, fromInput, toInput, controlSlider) {
+  const [from, to] = getParsed(fromInput, toInput);
+  fillSlider(fromInput, toInput, '#C6C6C6', '#25daa5', controlSlider);
+  setToggleAccessible(toInput);
+  if (from <= to) {
+    toSlider.value = to;
+    toInput.value = to;
+  } else {
+    toInput.value = from;
+  }
+}
+
+function controlFromSlider(fromSlider, toSlider, fromInput) {
+  const [from, to] = getParsed(fromSlider, toSlider);
+  fillSlider(fromSlider, toSlider, '#C6C6C6', '#25daa5', toSlider);
+  if (from > to) {
+    fromSlider.value = to;
+    fromInput.value = to;
+  } else {
+    fromInput.value = from;
+  }
+}
+
+function controlToSlider(fromSlider, toSlider, toInput) {
+  const [from, to] = getParsed(fromSlider, toSlider);
+  fillSlider(fromSlider, toSlider, '#C6C6C6', '#25daa5', toSlider);
+  setToggleAccessible(toSlider);
+  if (from <= to) {
+    toSlider.value = to;
+    toInput.value = to;
+  } else {
+    toInput.value = from;
+    toSlider.value = from;
+  }
+}
+
+function getParsed(currentFrom, currentTo) {
+  const from = parseInt(currentFrom.value, 10);
+  const to = parseInt(currentTo.value, 10);
+  return [from, to];
+}
+
+function fillSlider(from, to, sliderColor, rangeColor, controlSlider) {
+  const rangeDistance = to.max - to.min;
+  const fromPosition = from.value - to.min;
+  const toPosition = to.value - to.min;
+  controlSlider.style.background = `linear-gradient(
+      to right,
+      ${sliderColor} 0%,
+      ${sliderColor} ${(fromPosition) / (rangeDistance) * 100}%,
+      ${rangeColor} ${((fromPosition) / (rangeDistance)) * 100}%,
+      ${rangeColor} ${(toPosition) / (rangeDistance) * 100}%, 
+      ${sliderColor} ${(toPosition) / (rangeDistance) * 100}%, 
+      ${sliderColor} 100%)`;
+}
+
+function setToggleAccessible(currentTarget) {
+  const toSlider = document.querySelector('#toSlider');
+  if (Number(currentTarget.value) <= 0) {
+    toSlider.style.zIndex = 2;
+  } else {
+    toSlider.style.zIndex = 0;
+  }
+}
+
+fillSlider(fromSlider, toSlider, '#C6C6C6', '#25daa5', toSlider);
+setToggleAccessible(toSlider);
+
+fromSlider.oninput = () => controlFromSlider(fromSlider, toSlider, fromInput);
+toSlider.oninput = () => controlToSlider(fromSlider, toSlider, toInput);
+fromInput.oninput = () => controlFromInput(fromSlider, fromInput, toInput, toSlider);
+toInput.oninput = () => controlToInput(toSlider, fromInput, toInput, toSlider);
