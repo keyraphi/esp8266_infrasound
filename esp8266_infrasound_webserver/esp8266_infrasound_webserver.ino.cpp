@@ -1,3 +1,5 @@
+#include "HardwareSerial.h"
+#include "core_esp8266_features.h"
 #include <Arduino.h>
 #include <AsyncJson.h>
 #include <ESP8266WiFi.h>
@@ -20,8 +22,10 @@
 
 EspSoftwareSerial::UART esp_serial;
 
-String ssid;
-String password;
+bool is_ssid_input_required;
+bool is_password_input_required;
+String ssid = "no_wifi";
+String password = "";
 AsyncWebServer server(80);
 AsyncEventSource events("/measurement_events");
 
@@ -37,7 +41,7 @@ FsFile measurement_file;
 // Printing and reading from USB with cout and cin
 ArduinoOutStream cout(Serial);
 // input buffer for line
-char cinBuf[32];
+char cinBuf[128];
 ArduinoInStream cin(Serial, cinBuf, sizeof(cinBuf));
 
 // Some global variables to enable or disable features based on connected
@@ -67,7 +71,7 @@ IPAddress gateway(192, 168, 4, 1);
 IPAddress subnet(255, 255, 255, 0);
 
 // forward declarations
-void initWifi();
+bool initWifi();
 void initWebserver();
 void pollSensorISR();
 bool openMeasurementFileAppending();
@@ -416,7 +420,7 @@ void onStaticFile(AsyncWebServerRequest *request) {
   String contentType;
   if (url.endsWith(".html"))
     contentType = "text/html";
-  else if (url.endsWith(".css")) 
+  else if (url.endsWith(".css"))
     contentType = "text/css";
   else if (url.endsWith(".js"))
     contentType = "application/javascript";
@@ -454,41 +458,9 @@ void onStaticFile(AsyncWebServerRequest *request) {
 
 void onIndex(AsyncWebServerRequest *request) {
   String RedirectUrl = "http://";
-  if (ON_STA_FILTER(request)) {
-    RedirectUrl += WiFi.localIP().toString();
-    RedirectUrl += "/index.html";
-  } else {
-    RedirectUrl += WiFi.softAPIP().toString();
-    RedirectUrl += "/wifi.html";
-  }
+  RedirectUrl += WiFi.localIP().toString();
+  RedirectUrl += "/index.html";
   request->redirect(RedirectUrl);
-}
-
-void onPostWifi(AsyncWebServerRequest *request) {
-  cout << "/set_wifi credentials were sent" << endl;
-  int params = request->params();
-  for (int i = 0; i < params; i++) {
-    AsyncWebParameter *p = request->getParam(i);
-    if (p->isPost()) {
-      if (p->name() == "ssid") {
-        ssid = p->value();
-      } else if (p->name() == "password") {
-        password = p->value();
-      }
-    }
-  }
-  if (ssid.length() == 0) {
-    cout << "SSID length is 0... ignoring data" << endl;
-    request->send(200);
-    return;
-  }
-  if (write_wifi_credentials()) {
-    cout << "WiFi credentials successfully updated ... restarting" << endl;
-    ESP.restart();
-  } else {
-    cout << "Couldn't write WiFi credentials" << endl;
-    request->send(200);
-  }
 }
 
 void onConnect(AsyncEventSourceClient *client) {
@@ -558,8 +530,6 @@ void initWebserver() {
   server.on("/downloads", HTTP_GET, onGetDownloads);
   cout << "serving /download" << endl;
   server.on("/download", HTTP_GET, onDownload);
-  cout << "serving /set_wifi" << endl;
-  server.on("/set_wifi", HTTP_POST, onPostWifi);
   cout << "serving /start_timestamp" << endl;
   server.on("/start_timestamp", HTTP_GET, onStartTimestamp);
   cout << "serving /start_measurements" << endl;
@@ -575,20 +545,7 @@ void initWebserver() {
   server.begin();
 }
 
-void configureAccessPoint() {
-  while (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
-    cout << "Failed - trying again" << endl;
-  }
-  cout << "Setting up access point 'infrasound-sensor'" << endl;
-  while (!WiFi.softAP("infrasound-sensor")) {
-    cout << "Failed - trying again" << endl;
-  }
-  cout << "Access point was set up." << endl;
-  cout << "SSID: 'infrasound-sensor', no password, IP-Address:"
-       << WiFi.softAPIP().toString() << endl;
-}
-
-void initWifi() {
+bool initWifi() {
   // Try loading wifi credentials
   bool successfully_read_wifi_credentials = load_wifi_credentials();
   if (successfully_read_wifi_credentials) {
@@ -598,13 +555,12 @@ void initWifi() {
   }
   if (WiFi.waitForConnectResult() != WL_CONNECTED) {
     cout << "Failed to connect to: " << ssid << endl;
-    cout << "Configuring own Network Access Point" << endl;
-    configureAccessPoint();
     is_wifi_client = false;
-    return;
+    return false;
   }
   cout << "IP Address: " << WiFi.localIP().toString() << endl;
   is_wifi_client = true;
+  return true;
 }
 
 void initTimestamp() {
@@ -657,14 +613,17 @@ void createMeasurementFile() {
       return;
     }
   }
-  measurement_file_name =
-      "/measurements/" + millisecondsToTimeString(start_timestamp);
-  uint8_t retries = 0;
+  String base_name;
+  if (start_timestamp == 0) {
+    base_name = "/measurements/unbekannt";
+  } else {
+    base_name = "/measurements/" + millisecondsToTimeString(start_timestamp);
+  }
+  measurement_file_name = base_name;
+  uint32_t retries = 0;
   while (sd.exists(measurement_file_name.c_str())) {
     ++retries;
-    measurement_file_name =
-        "/measurements/" + millisecondsToTimeString(start_timestamp);
-    +"_" + String(retries);
+    measurement_file_name = base_name + String("_") + String(retries);
   }
   cout << "Creating file " << measurement_file_name << endl;
   if (!measurement_file.open(measurement_file_name.c_str(),
@@ -695,6 +654,65 @@ void setup() {
   cout << ARDUINO_BOARD << endl;
   cout << "##########################" << endl;
 
+  // Initialize SD-Card
+  while (!initSdCard()) {
+    cout << "Failed to initialize SD-Card..." << endl;
+    delay(1000);
+    cout << "Trying again" << endl;
+  }
+
+  // init wifi
+  is_ssid_input_required = !initWifi();
+
+  // clear Serial in
+  cout << "Clearing Serial in" << endl;
+  String dummy = Serial.readString();
+
+  if (is_ssid_input_required) {
+    is_password_input_required = false;
+    cout
+        << "Please type in SSID (name) of the WiFi network to connect to.\nYou "
+           "have 10 seconds before sensor starts in offline mode."
+        << endl;
+    unsigned long start_millis = millis();
+    while (millis() - start_millis < 10 * 1000) {
+      ssid = Serial.readStringUntil('\n');
+      if (!ssid.isEmpty()) {
+        is_ssid_input_required = false;
+        is_password_input_required = true;
+        break;
+      }
+    }
+    if (is_password_input_required) {
+      cout << "Please type in the password for " << ssid
+           << ".\nYou have 1 minute";
+      while (millis() - start_millis < 60 * 1000) {
+        password = Serial.readStringUntil('\n');
+        if (!password.isEmpty()) {
+          is_ssid_input_required = false;
+          is_password_input_required = false;
+          break;
+        }
+      }
+      if (!is_password_input_required) {
+        cout << "Got the password. Trying to connect to the given WiFi."
+             << endl;
+        if (write_wifi_credentials() && initWifi()) {
+          cout << "Successfully connected to " << ssid << endl;
+          cout << "This WiFi is now saved and will automatically be connected "
+                  "from now on."
+               << endl;
+        } else {
+          cout << "Failed to connect. Restarting to give you another chance."
+               << endl;
+          ESP.restart();
+        }
+      } else {
+        cout << "Time has passed... resuming without wifi";
+      }
+    }
+  }
+
   // Connection to Arduino serial using software serial
   cout << "Connecting to Sensor Board" << endl;
   esp_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
@@ -705,24 +723,15 @@ void setup() {
   }
   cout << "Connection to Sensor Board established" << endl;
 
-  // Initialize SD-Card
-  while (!initSdCard()) {
-    cout << "Failed to initialize SD-Card..." << endl;
-    delay(1000);
-    cout << "Trying again" << endl;
-  }
+  is_measurement_running = true;
 
-  // init wifi
-  initWifi();
   // init time
   if (is_wifi_client) {
     initTimestamp();
+
+    // Setup Webserver
+    initWebserver();
   }
-
-  is_measurement_running = true;
-
-  // Setup Webserver
-  initWebserver();
 }
 
 bool openMeasurementFileAppending() {
@@ -778,11 +787,11 @@ void handleNewMeasurements() {
   for (uint32_t i = 0; i < measurements_buffer.available(); ++i) {
     float measurement = measurements_buffer.pop();
     uint32_t measurement_idx =
-        indices_buffer.pop(); // NOTE: we assume that this buffer always has the
-                              // same size!
+        indices_buffer.pop(); // NOTE: we assume that this buffer always has
+                              // the same size!
     measurement_file_buffer[measurements_in_file_buffer++] = measurement;
     // Send via websocket
-    if (is_measurement_running) {
+    if (is_measurement_running && is_wifi_client) {
       sendMeasurementEvent(measurement_idx, measurement);
     }
   }
@@ -804,9 +813,9 @@ bool getMeasurementFromArduino(uint32_t *measurement_idx, float *value) {
   char package_start;
   esp_serial.read(&package_start, 1);
   is_package_start_synchronized = package_start == '\xFF';
-  // cout << "DEBUG: got package start: " << static_cast<int>(package_start) <<
-  // " and is_package_start_synchronized: " << is_package_start_synchronized <<
-  // endl;
+  // cout << "DEBUG: got package start: " << static_cast<int>(package_start)
+  // << " and is_package_start_synchronized: " <<
+  // is_package_start_synchronized << endl;
   if (!is_package_start_synchronized) {
     cout << "Waiting for valid package start ..." << endl;
     return false;
@@ -851,8 +860,8 @@ void loop() {
   if (is_measurement_running) {
     checkArdinoForMeasurements();
     if (measurements_buffer.available() > 0) {
-      // Let clients know about the new measurements and write everything new to
-      // the event socket and file
+      // Let clients know about the new measurements and write everything new
+      // to the event socket and file
       handleNewMeasurements();
     }
   }
