@@ -1155,7 +1155,12 @@ function updateColormap(minPa, maxPa, minDbG, maxDbG) {
   for (const [i, x] of xs.entries()) {
     const weight = i / (numXLabels - 1);
     const value = (1 - weight) * min_max[0] + weight * min_max[1];
-    const label = `${value.toExponential(1)} ${unit}`;
+    let label = "";
+    if (currentRenderMode == 2) {
+      label = `${value.toFixed(1)} ${unit}`;
+    } else {
+      label = `${value.toExponential(1)} ${unit}`;
+    }
     const labelWidth = ctx.measureText(label).width;
     ctx.fillStyle = "black";
     ctx.font = "14px Arial";
@@ -1192,7 +1197,7 @@ function updateSpectrogramLabels(currentTime, updateIntervals_ms) {
   }
 
   // draw y-axis labels (frequencies)
-  const freqMin = 25 / labelCanvas.height;
+  const freqMin = 0;
   const freqMax = 25;
   for (let i = 0; i <= numYLabels - 1; i++) {
     const y = ((0.5 + i) / numYLabels) * labelCanvas.height;

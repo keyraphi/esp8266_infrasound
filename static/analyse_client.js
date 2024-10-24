@@ -164,7 +164,7 @@ async function processChunkedResponse(response) {
     setProgressbar(0, "No work pending");
     return;
   }
-  const measurementData = new Float32Array(downloadedData.slice(8, downloadedData.length));
+  const measurementData = new Float32Array(downloadedData.slice(8, downloadedData.length).buffer);
   setProgressbar(100, "Parsing Data");
 
   console.log("Download finished... starting analysis");
@@ -185,38 +185,31 @@ function setProgressbar(value, label) {
 class MeasurementAnalyzer {
   constructor(time_sequence) {
     this.sequence = time_sequence;
-    this.fft_window_size = 1024;
-    if (pffft_runner) {
-      cleanup_pffft();
-    }
-    initialize_pffft(this.fft_window_size);
 
     this.startIdx = 0;
     this.endIdx = time_sequence.length;
-    this.spectrogram = new Spectrogram(this.fft_window_size); // TODO get width from canvas
+    this.spectrogram = new Spectrogram(1024, time_sequence.length * 20 / 1000);
+    this.setFFTWindowSize(1024);
     // TODO make sure the number is correct
-    this.durationSeconds = linspace(0, time_sequence.length * 20, Math.floor(time_sequence.length / this.spectrogram.width));
+    this.durationSeconds = linspace(0, time_sequence.length * 20 / 1000, this.spectrogram.width);
     this.totalSoundPressureLevels = new Float32Array(this.durationSeconds.length);
     // Run intial analysis
     this.analyze(this.startIdx, this.endIdx);
   }
 
   analyze(startIdx, endIdx) {
-    if (typeof startIdx == "undefined") {startIdx = this.startIdx;}
-    if (typeof endIdx == "undefined") {endIdx = this.endIdx;}
+    if (typeof startIdx == "undefined") { startIdx = this.startIdx; }
+    if (typeof endIdx == "undefined") { endIdx = this.endIdx; }
     const samplesToAnalyze = Math.max(endIdx - startIdx, 0);
-    const stride = Math.floor(samplesToAnalyze / this.spectrogram.width);
-    if (stride == 0) {
-      stride = 1;
-    }
+    const stride = samplesToAnalyze / this.spectrogram.width;
     // center the fft window at each selected sapmle and compute a spectrum
     // TODO embarisingly parallel -> multithread?
-    for (let i = 0; i < this.spectrogram.width; i += stride) {
-      // show progress
-      const progress = 100 * i / this.spectrogram.width;
-      setProgressbar(progress, "Anayzing");
+    for (let i = 0; i < this.spectrogram.width; i++) {
       // index of center measurement
-      const sample_idx = startIdx + i * stride;
+      const sample_idx = startIdx + Math.round(i * stride);
+
+      const progress = 100 * (i * stride) / (endIdx - startIdx);
+      setProgressbar(progress, "Anayzing");
       // span window around that center
       let window_start_idx = sample_idx - this.fft_window_size / 2;
       let window_end_idx = sample_idx + this.fft_window_size / 2;
@@ -248,13 +241,11 @@ class MeasurementAnalyzer {
         fft_time_sequence.set(end_padding, start_padding_size + actual_values.length);
       }
 
-
       const spectrum = fourier_transform(fft_time_sequence);
       // update spectrogram
       this.spectrogram.setSpectrum(i, spectrum);
+      this.spectrogram.render();
       // set sound pressure level value in chart
-      console.log("DEBUG: fft_time_sequence", fft_time_sequence);
-      console.log("DEBUG: spectrum", spectrum);
       this.setSoundpressure(i, spectrum);
     }
     this.startIdx = startIdx;
@@ -266,12 +257,11 @@ class MeasurementAnalyzer {
   setSoundpressure(index, spectrum) {
     const frequencies = linspace(0, 25, spectrum.length);
     const totalSoundPressureLevel = computeTotalDBG(frequencies, spectrum);
-    console.log("DEBUG: totalSoundPressureLevel", totalSoundPressureLevel);
     this.totalSoundPressureLevels[index] = totalSoundPressureLevel;
 
     // TODO don't always do this it might be quite slow
     const chart_data = [];
-    for (let i=0; i < this.durationSeconds.length; i++) {
+    for (let i = 0; i < this.durationSeconds.length; i++) {
       chart_data.push([this.durationSeconds[i], this.totalSoundPressureLevels[i]]);
     }
     chartSoundPressureOverTime.series[0].setData(chart_data, false, false, false);
@@ -284,14 +274,14 @@ class MeasurementAnalyzer {
     this.spectrogram.setFFTWindowSize(fft_window_size);
     cleanup_pffft();
     initialize_pffft(this.fft_window_size);
-    this.analyze();
   }
+
 }
 
 class Spectrogram {
-  constructor(fft_window_size) {
-    this.width = document.getElementById("SpectrogramContainer").offsetWidth;
+  constructor(fft_window_size, total_duration) {
     this.total_frequency_steps = fft_window_size / 2;
+    this.total_duration = total_duration;
 
     // create webgl texture for holding the ata
     const canvas = document.getElementById("webglCanvas");
@@ -318,14 +308,346 @@ class Spectrogram {
       this.gl.TEXTURE_WRAP_T,
       this.gl.CLAMP_TO_EDGE,
     );
+    // initialize webg spectrogram
+    this.initWebgl();
+
     // initialize the texture with zeros
-    this.allocateTexture();
-    this.columnMax = new Float32Array(this.width).fill(Number.NEGATIVE_INFINITY);
-    this.columnMin = new Float32Array(this.width).fill(Number.POSITIVE_INFINITY);
-    this.columnMaxIdx = new Int32Array(this.width);
-    this.columnMinIdx = new Int32Array(this.width);
-    this.max = Number.MIN_VALUE;
-    this.min = Number.MAX_VALUE;
+    const width = document.getElementById("SpectrogramContainer").offsetWidth;
+    this.setWidth(width);
+
+
+    // draw Colormap
+    this.drawColormap();
+    this.render();
+
+  }
+
+  drawColormap() {
+    const colormapCanvas = document.getElementById("colormap");
+    const ctx = colormapCanvas.getContext("2d");
+    ctx.clearRect(0, 0, colormapCanvas.width, colormapCanvas.height);
+
+    const padding = 50;
+    const imageData = ctx.createImageData(colormapCanvas.width, colormapCanvas.height);
+    for (let x = 0; x < colormapCanvas.width - padding * 2; x++) {
+      const color = computeColorFromValue(x / (colormapCanvas.width - padding * 2 - 1));
+      for (let y = 0; y < 10; y++) {
+        const index = 4 * ((y * colormapCanvas.width) + x + padding);
+        imageData.data[index + 0] = color.red;
+        imageData.data[index + 1] = color.green;
+        imageData.data[index + 2] = color.blue;
+        imageData.data[index + 3] = 255;
+      }
+    }
+    ctx.putImageData(imageData, 0, 0);
+
+    // Draw grid lines
+    const numXLabels = Math.round((colormapCanvas.width - padding * 2) / 200);
+    const start_x = padding;
+    const stop_x = colormapCanvas.width - padding;
+    const xs = linspace(start_x, stop_x, numXLabels)
+    for (const x of xs) {
+      ctx.beginPath();
+      ctx.moveTo(x, 10);
+      ctx.lineTo(x, 15);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Draw labels
+    const unit = "db(G)";
+    // Fixed value range for db(G)
+    const min = 0;
+    const max = 100;
+
+    for (const [i, x] of xs.entries()) {
+      const weight = i / (numXLabels - 1);
+      const value = (1 - weight) * min + weight * max;
+      const label = `${value.toFixed(1)} ${unit}`;
+      const labelWidth = ctx.measureText(label).width;
+      ctx.fillStyle = "black";
+      ctx.font = "14px Arial";
+      ctx.fillText(label, x - labelWidth / 2, colormapCanvas.height - 10);
+    }
+  }
+
+  initWebgl() {
+    // Create shader program
+    const vertexShaderSource = `#version 300 es
+precision highp float;
+in vec2 aPosition;
+
+void main() {
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+    const fragmentShaderSource = `#version 300 es
+precision highp float;
+
+// Ringbuffer data
+uniform sampler2D uTexture;
+// minimum and maximum value for normalization
+uniform float uMinDbG;
+uniform float uMaxDbG;
+
+// output color
+out vec4 fragColor;
+
+// function to compute SPL from input value
+float computeSPL(float value) {
+  const float sqrt_2 = 1.41421356237;
+  const float p_ref = 20e-6; // Reference preassure for SPL
+  return 20.0 * log(value / sqrt_2 / p_ref) / log(10.0);
+}
+
+// Function for G-Weighting
+float GWeighting(float f) {
+  const float[21] frequencies = float[21](
+     0.25, 0.315,
+     0.4, 0.5,
+     0.63, 0.8,
+     1.0, 1.25,
+     1.6, 2.0,
+     2.5, 3.15,
+     4.0, 5.0,
+     6.3, 8.0,
+     10.0, 12.5,
+     16.0, 20.0, 25.0 );
+  const float[21] gValues = float[21](
+    -88.0,
+    -80.0, -72.1,
+    -64.3, -56.6,
+    -49.5, -43.0,
+    -37.5, -32.6,
+    -28.3, -24.1,
+    -20.0, -16.0,
+    -12.0, -8.0,
+    -4.0, 0.0,
+    4.0, 7.7,
+    9.0, 3.7
+ );
+
+  if (f <= frequencies[0]) {
+    return gValues[0];
+  } else if (f >= frequencies[20]) {
+    return gValues[20];
+  }
+
+  for (int i = 0; i < 20; ++i) {
+    if (f >= frequencies[i] && f <= frequencies[i + 1]) {
+        // Calculate the interpolation factor
+        float factor = (f - frequencies[i]) / (frequencies[i + 1] - frequencies[i]);
+        return mix(gValues[i], gValues[i + 1], factor);
+    }
+  }
+}
+
+// Function to compute dBG
+float computeDBG(float value, float frequency) {
+  float splValue = computeSPL(value);
+  float gWeight = GWeighting(frequency);
+  return splValue + gWeight;
+}
+
+// Simple color map from white-blue-green-yellow-red-black
+vec3 rainbowColor(float value) {
+    // Clamp value to the range [0, 1]
+    value = clamp(value, 0.0, 1.0);
+
+    const float scalars[6] = float[6](0.0, 0.2, 0.4, 0.6, 0.8, 1.0);
+
+    const vec3 colors[6] = vec3[6](vec3(255,255,255),   // Scalar 0
+                                   vec3(0, 112, 255),   // Scalar 0.2
+                                   vec3(0, 255, 3),     // Scalar 0.4
+                                   vec3(255, 255, 4),   // Scalar 0.6
+                                   vec3(255, 2, 1),     // Scalar 0.8
+                                   vec3(0, 0, 0)       // Scalar 1
+                                  );
+
+    // Interpolate between the colors
+    vec3 color = colors[0]; // Default to the first color
+
+    for (int i = 0; i < 5; ++i) {
+        if (value >= scalars[i] && value <= scalars[i + 1]) {
+            // Calculate the interpolation factor
+            float factor = (value - scalars[i]) / (scalars[i + 1] - scalars[i]);
+            color = mix(colors[i], colors[i + 1], factor);
+            break;
+        }
+    }
+
+    // Normalize the color to the [0, 1] range by dividing by 255.0
+    return color / 255.0;
+}
+
+// Function to map a normalized value using a heatmap (inferno)
+// For reference colors see: https://www.kennethmoreland.com/color-advice/
+vec3 heatmapColor(float value) {
+    // Clamp value to the range [0, 1]
+    value = clamp(value, 0.0, 1.0);
+
+    // Define the scalar values and corresponding colors from your table
+    const float scalars[8] = float[8](0.0, 0.142857142857143, 0.285714285714286, 0.428571428571429, 
+                                      0.571428571428571, 0.714285714285714, 0.857142857142857, 1.0);
+
+    const vec3 colors[8] = vec3[8](vec3(0, 0, 4),       // Scalar 0
+                                   vec3(40, 11, 84),    // Scalar 0.142857142857143
+                                   vec3(101, 21, 110),  // Scalar 0.285714285714286
+                                   vec3(159, 42, 99),   // Scalar 0.428571428571429
+                                   vec3(212, 72, 66),   // Scalar 0.571428571428571
+                                   vec3(245, 125, 21),  // Scalar 0.714285714285714
+                                   vec3(250, 193, 39),  // Scalar 0.857142857142857
+                                   vec3(252, 255, 164)  // Scalar 1
+                                  );
+
+    // Interpolate between the colors
+    vec3 color = colors[0]; // Default to the first color
+
+    for (int i = 0; i < 7; ++i) {
+        if (value >= scalars[i] && value <= scalars[i + 1]) {
+            // Calculate the interpolation factor
+            float factor = (value - scalars[i]) / (scalars[i + 1] - scalars[i]);
+            color = mix(colors[i], colors[i + 1], factor);
+            break;
+        }
+    }
+
+    // Normalize the color to the [0, 1] range by dividing by 255.0
+    return color / 255.0;
+}
+
+void main() {
+  // Calculate index in the ringbuffer based on fragment position
+  vec2 shape = vec2(textureSize(uTexture, 0).xy);
+  vec2 fragCoord = gl_FragCoord.xy;
+  fragCoord.y = shape.y - fragCoord.y - 1.f;
+  
+  vec2 texCoord = fragCoord / shape;
+  float frequency_steps = 25.0 / (shape.y + 1.0);
+  float frequency = frequency_steps * (1.0 + fragCoord.y);
+
+  // load texel coordinate for the current position
+  float value = texture(uTexture, texCoord).r;
+  
+  value = computeDBG(value, frequency);
+  float minValue = uMinDbG;
+  float maxValue = uMaxDbG;
+  // Make sure min value is not -inf if an amplitude ever really gets 0
+  value = clamp(value, minValue, maxValue);
+  
+  // Normalize spectrogram to [0, 1]
+  value = (value - minValue) / (maxValue - minValue);
+  // get color
+  vec3 color = rainbowColor(value);
+  // vec3 color = heatmapColor(value);
+  fragColor = vec4(color, 1.0);
+  }
+`
+    this.vertexShader = compileShader(this.gl, vertexShaderSource, this.gl.VERTEX_SHADER);
+    this.fragmentShader = compileShader(
+      this.gl,
+      fragmentShaderSource,
+      this.gl.FRAGMENT_SHADER,
+    );
+    this.shaderProgram = this.gl.createProgram();
+    this.gl.attachShader(this.shaderProgram, this.vertexShader);
+    this.gl.attachShader(this.shaderProgram, this.fragmentShader);
+    this.gl.linkProgram(this.shaderProgram);
+
+    //check if linking program was successful
+    if (!this.gl.getProgramParameter(this.shaderProgram, this.gl.LINK_STATUS)) {
+      console.error(
+        "Error linking program:",
+        this.gl.getProgramInfoLog(this.shaderProgram),
+      );
+    }
+    // create a rectangle
+    const positionBuffer = this.gl.createBuffer();
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, positionBuffer);
+    const positions = new Float32Array([
+      -1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1,
+    ]);
+    this.gl.bufferData(this.gl.ARRAY_BUFFER, positions, this.gl.STATIC_DRAW);
+
+    // Set up attribute for vertex positions
+    const positionLocation = this.gl.getAttribLocation(this.shaderProgram, "aPosition");
+    this.gl.enableVertexAttribArray(positionLocation);
+    this.gl.vertexAttribPointer(positionLocation, 2, this.gl.FLOAT, false, 0, 0);
+  }
+
+  render() {
+    // render the webgl part
+    this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+    this.gl.useProgram(this.shaderProgram);
+
+    this.gl.uniform1f(
+      this.gl.getUniformLocation(this.shaderProgram, "uMinDbG"),
+      0.0,
+    );
+    this.gl.uniform1f(
+      this.gl.getUniformLocation(this.shaderProgram, "uMaxDbG"),
+      100.0,
+    );
+
+    // bind texture
+    this.gl.activeTexture(this.gl.TEXTURE0);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
+
+    // render the labels on top
+    const labelCanvas = document.getElementById("labelCanvas");
+    const ctx = labelCanvas.getContext("2d");
+    ctx.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
+
+    // draw grid lines
+    const numYLabels = Math.floor(labelCanvas.height / 50);
+    const numXLabels = labelCanvas.width / 100;
+    for (let i = 0; i <= numYLabels - 1; i++) {
+      const y = ((0.5 + i) / numYLabels) * labelCanvas.height;
+      ctx.beginPath();
+      ctx.moveTo(80, y);
+      ctx.lineTo(labelCanvas.width, y);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    for (let i = 0; i <= numXLabels; i++) {
+      const x = labelCanvas.width * (i / numXLabels);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, labelCanvas.height);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // draw y-axis labels (frequencies)
+    const freqMin = 0;
+    const freqMax = 25;
+    for (let i = 0; i <= numYLabels - 1; i++) {
+      const y = ((0.5 + i) / numYLabels) * labelCanvas.height;
+      const freq = freqMin + ((i + 0.5) / numYLabels) * (freqMax - freqMin);
+      const hz_label = `${freq.toFixed(1)} Hz`;
+      const hz_label_height = 14;
+      ctx.fillStyle = "black";
+      ctx.font = "14px Arial";
+      ctx.fillText(hz_label, 10, y + hz_label_height / 2);
+    }
+
+    // draw x-axis labels (time)
+    const startTime = 0;
+    const endTime = this.total_duration;
+    for (let i = 0; i <= numXLabels; i++) {
+      const x = labelCanvas.width * (i / numXLabels);
+      const time = startTime -
+        (i * (startTime - endTime)) / numXLabels;
+      const timeString = `${time.toFixed(1)} sec`;
+      const timeStringWidth = ctx.measureText(timeString).width;
+      ctx.fillStyle = "black";
+      ctx.font = "14px Arial";
+      ctx.fillText(timeString, x - timeStringWidth, labelCanvas.height - 10);
+    }
   }
 
   setSpectrum(columnIdx, spectrum) {
@@ -354,6 +676,9 @@ class Spectrogram {
 
   setFFTWindowSize(fft_window_size) {
     this.total_frequency_steps = fft_window_size / 2;
+    const webglCanvas = document.getElementById("webglCanvas");
+    const labelCanvas = document.getElementById("labelCanvas");
+    webglCanvas.height = labelCanvas.height = this.total_frequency_steps;
     this.allocateTexture();
   }
 
@@ -367,7 +692,7 @@ class Spectrogram {
       0,
       this.gl.R32F,
       this.width,
-      this.height,
+      this.total_frequency_steps,
       0,
       this.gl.RED,
       this.gl.FLOAT,
@@ -376,10 +701,23 @@ class Spectrogram {
   }
 
   setWidth(newWidth) {
-    if (this.width == new width) {
+    if (this.width == newWidth) {
       return;
     }
     this.width = newWidth;
+
+    // Resize the canvases
+    const webglCanvas = document.getElementById("webglCanvas");
+    const labelCanvas = document.getElementById("labelCanvas");
+    const colormapCanvas = document.getElementById("colormap");
+    const container = document.getElementById("SpectrogramDiv");
+    webglCanvas.width = labelCanvas.width = this.width;
+    webglCanvas.height = labelCanvas.height = this.total_frequency_steps;
+    this.gl.viewport(0, 0, webglCanvas.width, webglCanvas.height);
+    colormapCanvas.width = this.width;
+    colormapCanvas.height = 50;
+    container.style.height = `${this.total_frequency_steps}px`;
+
     this.allocateTexture();
     // Reset the min and max values and indices
     this.columnMax = new Float32Array(this.width).fill(Number.NEGATIVE_INFINITY);
@@ -390,6 +728,9 @@ class Spectrogram {
     this.min = Number.MAX_VALUE;
     this.maxIdx = -1;
     this.minIdx = -1;
+
+    this.drawColormap();
+    this.render();
   }
 }
 
@@ -573,4 +914,49 @@ function fourier_transform(buffer) {
   );
 
   return scaled_magnitudes;
+}
+
+// webgl stuff
+
+function compileShader(gl, source, type) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+
+  if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    return shader;
+  } else {
+    console.error("Error compiling shader:", gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+}
+
+// colormap 
+function computeColorFromValue(value) {
+  const scalars = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+
+  const colors = [
+    { "red": 255, "green": 255, "blue": 255 },
+    { "red": 0, "green": 112, "blue": 255 },
+    { "red": 0, "green": 255, "blue": 3 },
+    { "red": 255, "green": 255, "blue": 4 },
+    { "red": 255, "green": 2, "blue": 1 },
+    { "red": 0, "green": 0, "blue": 0 },
+  ];
+
+  // Interpolate between the colors
+  let color = colors[0]; // Default to the first color
+
+  for (let i = 0; i < 5; i++) {
+    if (value >= scalars[i] && value <= scalars[i + 1]) {
+      // Calculate the interpolation factor
+      const factor = (value - scalars[i]) / (scalars[i + 1] - scalars[i]);
+      color.red = (1 - factor) * colors[i].red + factor * colors[i + 1].red;
+      color.green = (1 - factor) * colors[i].green + factor * colors[i + 1].green;
+      color.blue = (1 - factor) * colors[i].blue + factor * colors[i + 1].blue;
+      return color;
+    }
+  }
+  return color;
 }
