@@ -10,6 +10,7 @@ const fromSlider = document.querySelector('#fromSlider');
 const toSlider = document.querySelector('#toSlider');
 const fromInput = document.querySelector('#fromInput');
 const toInput = document.querySelector('#toInput');
+const analyseRangeButton = document.querySelector("#analyseRangeButton");
 
 const chartSoundPressureOverTime = new Highcharts.Chart({
   chart: {
@@ -194,13 +195,14 @@ class MeasurementAnalyser {
 
 
     this.startIdx = 0;
-    this.endIdx = time_sequence.length;
+    this.endIdx = time_sequence.length - 1;
     this.spectrogram = new Spectrogram(1024, time_sequence.length * 20 / 1000);
     this.setFFTWindowSize(1024);
     // TODO make sure the number is correct
     this.durationSeconds = linspace(0, time_sequence.length * 20 / 1000, this.spectrogram.width);
     this.totalSoundPressureLevels = new Float32Array(this.durationSeconds.length);
     this.previewSelectedRange = this.previewSelectedRange.bind(this);
+    this.onAnalyseSelectedRange = this.onAnalyseSelectedRange.bind(this);
     this.initAnalysisRangeSelector();
     // Run intial analysis
     this.analyse(this.startIdx, this.endIdx);
@@ -316,41 +318,27 @@ class MeasurementAnalyser {
     fromInput.addEventListener("input", this.previewSelectedRange);
     toInput.addEventListener("input", this.previewSelectedRange);
     // TODO add the confirm listener here
+    analyseRangeButton.addEventListener("click", this.onAnalyseSelectedRange);
+    analyseRangeButton.disabled = false;
   }
 
   previewSelectedRange() {
-    const from = fromSlider.value;
-    const to = toSlider.value;
+    const from = parseInt(fromSlider.value, 10);
+    const to = parseInt(toSlider.value, 10);
 
     this.spectrogram.previewSelectedRange(this.startIdx, this.endIdx, from, to);
   }
 
-  onAnalysisRangeChange() {
-    const startRange = document.getElementById('startRange');
-    const endRange = document.getElementById('endRange');
-    const minRange = 100; // Minimum range in indices
+  onAnalyseSelectedRange() {
+    const from = parseInt(fromSlider.value);
+    const to = parseInt(toSlider.value);
+    console.log("Analysing selected range from index", from, "to index", to);
 
-    const rangeHighlight = document.querySelector('.range-highlight');
-    const startIdx = parseInt(startRange.value);
-    const endIdx = parseInt(endRange.value);
+    this.startIdx = from;
+    this.endIdx = from;
 
-    // Ensure the range is not smaller than minRange
-    if (endIdx - startIdx < minRange) {
-      if (endRange.value !== startRange.value) {
-        endRange.value = startIdx + minRange;
-      } else {
-        startRange.value = endIdx - minRange;
-      }
-    }
-
-    // Update the highlighted range between sliders
-    const startPercent = (startRange.value / startRange.max) * 100;
-    const endPercent = (endRange.value / endRange.max) * 100;
-    rangeHighlight.style.left = startPercent + '%';
-    rangeHighlight.style.width = (endPercent - startPercent) + '%';
-
-    // Call the provided function to display the measurements
-    this.analyse(startIdx, endIdx);
+    this.spectrogram.previewSelectedRange(this.startIdx, this.endIdx, this.startIdx, this.endIdx);
+    this.analyse(from, to);
   }
 }
 
@@ -400,9 +388,9 @@ class Spectrogram {
   }
 
   previewSelectedRange(startIdx, endIdx, from, to) {
-    console.log("DEBUG: Spectrogram.previewSelectedRange", startIdx, endIdx, from, to);
     this.startIdx = startIdx;
     this.endIdx = endIdx;
+    this.total_duration = (endIdx - startIdx) * 20 / 1000;
     this.previewRangeFrom = from;
     this.previewRangeTo = to;
 
@@ -751,7 +739,7 @@ void main() {
       const idx2pixelScale = labelCanvas.width / (this.endIdx - this.startIdx);
       const start = (this.endIdx - this.previewRangeTo) * idx2pixelScale;
       ctx.fillStyle = "rgba(200, 0, 0, 0.5)";
-      ctx.fillRect(labelCanvas.width - start, 0, labelCanvas.width - start, labelCanvas.height);
+      ctx.fillRect(labelCanvas.width - start, 0, labelCanvas.width, labelCanvas.height);
     }
   }
 
