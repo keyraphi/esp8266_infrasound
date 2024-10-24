@@ -120,7 +120,7 @@ Der Sensor hat drei Betriebsmodi:
 3. Analysemodus: Zur Analyse von zuvor aufgenommenen Messungen - Internetverbindung ist Notwendig!
 
 ### 1. Messmodus
-Sobald der Sensor mit strom versorgt ist (die Webserver Platine per USB-Kabel Strom bekommt) beginnt der Sensor sofort mit einer Messung.
+Sobald der Sensor mit strom versorgt ist (die Webserver Platine per USB-Kabel Strom bekommt) beginnt der Sensor nach 10 sekunden mit einer Messung.
 Die Messwerte werden binär also 32-Bit float in eine Datei geschrieben.
 Diese Datei wird in den Order `messurements/` geschrieben.
 Wenn der Sensor Internet hat ist der Name der Datei der Zeitpunkt der Aktivierung im format `YYYY-MM-DD hh:mm:ss-ms`.
@@ -138,9 +138,9 @@ In diesem Modus überträgt der Sensor in Echtzeit sämtliche Messwerte an das v
 Um sich mit dem Sensor zu verbinden ist eine __stabile__ WiFi Verbindung notwendig, welche wie folgt eingerichtet werden kann:
 1. In der AduinoIDE den SerialMonitor öffnen(TODO ... das muss ich im code ändern ... die aktuelle lösung ist blöd.)
 2. Sensor mit Computer verbinden.
-3. Sobald im Serial Monitor die Nachricht "SSID Eingeben" erscheint kann oben die SSID (der Name) ihres WLAN Netzes eingegeben werden und mit senden bestätigen.
-4. Sobald im Serial Monitor die Nachricht "Passwort Eingeben" erscheint kann das WLAN passwort eingegeben werden und absenden.
-5. Der Sensor started sich neu und versucht sich in das WLAN einzuwählen. Falls es nicht funktioniert geht es zurück zu Schritt 3.
+3. Sobald im Serial Monitor die Nachricht "SSID Eingeben" erscheint kann oben die SSID (der Name) ihres WLAN Netzes eingegeben werden und mit senden bestätigen. Wird 10 sekunden lange nichts eingegeben beginnt die offline-messung im Messmodus.
+4. Sobald im Serial Monitor die Nachricht "Passwort Eingeben" erscheint kann das WLAN passwort eingegeben werden und absenden. Hierfür bleiben 60 Sekunden Zeit. Danach beginnt der Sensor auch automatisch im offline modus mit messungen.
+5. Der Sensor versucht sich zu verbinden. Falls es nicht funktioniert startet der Sensor neu und es beginnt wieder bei Schritt 3.
 6. Der Sensor Bestätigt die Verbindung zum WLAN und zeigt seine IP-Adresse an. Diese kann bei einem Beliebigen Gerät im selben WLAN-Netzwerk in den Browser getippt werden um sich mit dem Sensor zu verbinden.
 7. Das Browserfenster zeigt die Messungen in Echtzeit an.
 
