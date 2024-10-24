@@ -201,16 +201,17 @@ class MeasurementAnalyzer {
     this.analyze(this.startIdx, this.endIdx);
   }
 
-  analyze() {
-    this.analyze(this.startIdx, this.endIdx);
-  }
-
-  async analyze(startIdx, endIdx) {
+  analyze(startIdx, endIdx) {
+    if (typeof startIdx == "undefined") {startIdx = this.startIdx;}
+    if (typeof endIdx == "undefined") {endIdx = this.endIdx;}
     const samplesToAnalyze = Math.max(endIdx - startIdx, 0);
     const stride = Math.floor(samplesToAnalyze / this.spectrogram.width);
+    if (stride == 0) {
+      stride = 1;
+    }
     // center the fft window at each selected sapmle and compute a spectrum
     // TODO embarisingly parallel -> multithread?
-    for (let i = 0; i < this.spectrogram.width; i++) {
+    for (let i = 0; i < this.spectrogram.width; i += stride) {
       // show progress
       const progress = 100 * i / this.spectrogram.width;
       setProgressbar(progress, "Anayzing");
@@ -252,6 +253,8 @@ class MeasurementAnalyzer {
       // update spectrogram
       this.spectrogram.setSpectrum(i, spectrum);
       // set sound pressure level value in chart
+      console.log("DEBUG: fft_time_sequence", fft_time_sequence);
+      console.log("DEBUG: spectrum", spectrum);
       this.setSoundpressure(i, spectrum);
     }
     this.startIdx = startIdx;
@@ -262,10 +265,8 @@ class MeasurementAnalyzer {
 
   setSoundpressure(index, spectrum) {
     const frequencies = linspace(0, 25, spectrum.length);
-    console.log("DEBUG: frequencies:", frequencies);
-    console.log("DEBUG: spectrum:", spectrum);
     const totalSoundPressureLevel = computeTotalDBG(frequencies, spectrum);
-    console.log("DEBUG: totalSoundPressureLevel:", totalSoundPressureLevel);
+    console.log("DEBUG: totalSoundPressureLevel", totalSoundPressureLevel);
     this.totalSoundPressureLevels[index] = totalSoundPressureLevel;
 
     // TODO don't always do this it might be quite slow
@@ -273,7 +274,6 @@ class MeasurementAnalyzer {
     for (let i=0; i < this.durationSeconds.length; i++) {
       chart_data.push([this.durationSeconds[i], this.totalSoundPressureLevels[i]]);
     }
-    console.log("DEBUG: updating chart with this data", chart_data);
     chartSoundPressureOverTime.series[0].setData(chart_data, false, false, false);
     chartSoundPressureOverTime.update({}, true, false, false);
   }
@@ -282,7 +282,7 @@ class MeasurementAnalyzer {
     // Get spectrum for the selected samples
     this.fft_window_size = fft_window_size;
     this.spectrogram.setFFTWindowSize(fft_window_size);
-    cleanup_pfft();
+    cleanup_pffft();
     initialize_pffft(this.fft_window_size);
     this.analyze();
   }
