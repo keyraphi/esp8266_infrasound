@@ -54,6 +54,7 @@ Nachdem der Sensor verdrahtet ist müssen die beiden Controller programmiert wer
 * Die Arduino IDE kennt den ESP8266 Controller standardmäßig nicht. Das kann
 allerdings nachinstalliert werden indem die Schritte under "Installing with
 Board Manager" hier: [Arduino core for ESP WiFichip](https://github.com/esp8266/Arduino) befolgt werden.
+* FÜr Windows muss ggf. noch folgender Treiber installiert werden: [https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers?tab=downloads](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers?tab=downloads)
 * Unsere Programme verwenden einige Bibliotheken, die standardmäßig nicht zur
 Verfügung stehen und erst in der Arduino IDE installiert werden müssen. Das
 geht bequem in der Arudino IDE mit dem Library Manager (v1: im Menü under
