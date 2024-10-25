@@ -59,7 +59,7 @@ Verfügung stehen und erst in der Arduino IDE installiert werden müssen. Das
 geht bequem in der Arudino IDE mit dem Library Manager (v1: im Menü under
 Tools, v2: rechts in der Leiste). Folgende Bibliotheken müssen installiert
 werden:
-    - NPTClient
+    - NTPClient
     - ArduinoJson
     - ArduinoUniqueId
     - AsyncTCP
