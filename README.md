@@ -136,14 +136,18 @@ Der Messmodus läuft solange bis der Sensor ausgesteckt wird oder ein neues WLAN
 Der Live-View-Modus ist genau gleich wie der Messmodus, nur, dass sich jemand übers W-LAN mit dem Sensor verbunden hat.
 In diesem Modus überträgt der Sensor in Echtzeit sämtliche Messwerte an das verbundene Gerät, wo sie dann grafisch aufbereitet dargestellt werden.
 
-Um sich mit dem Sensor zu verbinden ist eine __stabile__ WiFi Verbindung notwendig, welche wie folgt eingerichtet werden kann:
-1. In der AduinoIDE den SerialMonitor öffnen(TODO ... das muss ich im code ändern ... die aktuelle lösung ist blöd.)
-2. Sensor mit Computer verbinden.
-3. Sobald im Serial Monitor die Nachricht "SSID Eingeben" erscheint kann oben die SSID (der Name) ihres WLAN Netzes eingegeben werden und mit senden bestätigen. Wird 10 sekunden lange nichts eingegeben beginnt die offline-messung im Messmodus.
-4. Sobald im Serial Monitor die Nachricht "Passwort Eingeben" erscheint kann das WLAN passwort eingegeben werden und absenden. Hierfür bleiben 60 Sekunden Zeit. Danach beginnt der Sensor auch automatisch im offline modus mit messungen.
-5. Der Sensor versucht sich zu verbinden. Falls es nicht funktioniert startet der Sensor neu und es beginnt wieder bei Schritt 3.
-6. Der Sensor Bestätigt die Verbindung zum WLAN und zeigt seine IP-Adresse an. Diese kann bei einem Beliebigen Gerät im selben WLAN-Netzwerk in den Browser getippt werden um sich mit dem Sensor zu verbinden.
-7. Das Browserfenster zeigt die Messungen in Echtzeit an.
+Um sich mit dem Sensor zu verbinden ist eine __stabile__ WiFi Verbindung notwendig, welche wie folgt eingerichtet werden kann. Die SSID sollte keine Großbuchstaben enthalten.
+1. Entweder über SD-Karte:
+    1. Lege eine Datei `wifi_ssid_pw.txt` im root-Verzeichnis an.
+    2. Inhalt: 1. Zeile: SSID, 2. Zeile: Passwort, 3. Zeile: `307`
+2. Oder über AduinoIDE:
+    1. In der AduinoIDE den SerialMonitor öffnen(TODO ... das muss ich im code ändern ... die aktuelle lösung ist blöd.)
+    2. Sensor mit Computer verbinden.
+    3. Sobald im Serial Monitor die Nachricht "SSID Eingeben" erscheint kann oben die SSID (der Name) ihres WLAN Netzes eingegeben werden und mit senden bestätigen. Wird 10 sekunden lange nichts eingegeben beginnt die offline-messung im Messmodus.
+    4. Sobald im Serial Monitor die Nachricht "Passwort Eingeben" erscheint kann das WLAN passwort eingegeben werden und absenden. Hierfür bleiben 60 Sekunden Zeit. Danach beginnt der Sensor auch automatisch im offline modus mit messungen.
+    5. Der Sensor versucht sich zu verbinden. Falls es nicht funktioniert startet der Sensor neu und es beginnt wieder bei Schritt 3.
+    6. Der Sensor Bestätigt die Verbindung zum WLAN und zeigt seine IP-Adresse an. Diese kann bei einem Beliebigen Gerät im selben WLAN-Netzwerk in den Browser getippt werden um sich mit dem Sensor zu verbinden.
+    7. Das Browserfenster zeigt die Messungen in Echtzeit an.
 
 ACHTUNG: Der Live-View-Modus funktioniert gleichzeitig bei mehreren Geräten oder Browser Fenstern. Allerdings wird die Messung für alle unterbrochen wenn eines dieser Geräte in den Analysemodus wechselt.
 
@@ -172,7 +176,7 @@ Schalldruckpegel unterhalb von 85 dB(G) wahrnehmen konnten. Für details der Sta
 
 ### 3. Analysemodus
 Vom Live-View-Modus kann in den Analysemodus gewechselt werden indem im Menü zu Analyse gewechselt wird.
-Dadurch wird die aktuelle Messreihe auf dem Sensor gestoppt, damit er die gespeicherten Daten in der vollen Geschwindigkeit zur Verfügung stellen kann ohne immer wieder neue Messungen aufzeichnen zu müssen.
+Dadurch wird die aktuelle Messreihe auf dem Sensor **gestoppt**, damit er die gespeicherten Daten in der vollen Geschwindigkeit zur Verfügung stellen kann ohne immer wieder neue Messungen aufzeichnen zu müssen.
 Hier wird eine Liste aller Messdateien dargestellt, die auf dem Sensor gespeichert sind.
 Jede Messung kann entweder heruntergeladen werden (als .raw Datei) oder direkt im Browser analysiert werden.
 Für die Analyse stehen zwei Darstellungen bereit.
@@ -187,6 +191,9 @@ Wir werden weiter an diesem Sensor basteln. Wenn es Verbesserungen gibt werden s
 # Disclaimer
 Dieser Sensor ist ein Bastelprojekt, basierend auf einem Kostengünstigen Differentialdrucksensor und kann kein professionelles Infraschallmikrofon ersetzen.
 Die Software wird wie sie ist zur Verfügung gestellt ohne irgendwelche Garantien oder Haftungsübernamen.
+
+# Credits
+Das Projekt basiert auf den Arbeiten von [Stephan Holzheu](https://www.bayceer.uni-bayreuth.de/infraschall/), der sich als einer der ersten intensiv mit Infraschall von Windkraftanlagen beschäftigt hat.  Seine Untersuchungen konnten die Fehler der vielbeachteten Infraschallstudie des BGR (Bundesamt für Geologie und Rohstoffe) nachwiesen.  Er hatte auch die Idee zu einem DIY-Sensorbau mit einem SDP-600-25.
 
 ## Aliasing
 Der Sensor tastet alle 20 ms den Druckunterschied zwischen in der Box und außerhalb der Box ab und kann so Infraschall Signale bis zu 25 Hz recht genau messen. Allerdings zeichnet er dabei auch Druckschwingungen (Schall) auf, mit weit höheren Frequenzen als 25 Hz auf.  
