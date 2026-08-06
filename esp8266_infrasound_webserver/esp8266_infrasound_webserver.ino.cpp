@@ -5,6 +5,7 @@
 #include <ESP8266WiFi.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <LittleFS.h>
 #include <NTPClient.h>
 #include <SdFat.h>
 #include <SoftwareSerial.h>
@@ -14,7 +15,15 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream/ArduinoStream.h>
+#include <memory>
 #include <strings.h>
+
+#include "diagnostics.h"
+#include "infrasound_frame.h"
+#include "led_status.h"
+#include "logger.h"
+#include "measurement_file.h"
+#include "static_sync.h"
 
 #define SPI_SPEED SD_SCK_MHZ(4)
 #define MYPORT_TX 5
@@ -36,7 +45,6 @@ const char *wifi_acces_file_path = "wifi_ssid_pw.txt";
 // SSD Chip Select pin
 const int sd_chip_select = SS;
 SdFs sd;
-FsFile measurement_file;
 
 // Printing and reading from USB with cout and cin
 ArduinoOutStream cout(Serial);
@@ -48,33 +56,63 @@ ArduinoInStream cin(Serial, cinBuf, sizeof(cinBuf));
 // hardware
 bool is_sd_card_available = false;
 bool is_wifi_client = false;
-bool is_json_finalized = false;
 uint64_t start_timestamp = 0;
 volatile bool is_measurement_running = true;
-volatile bool create_new_measurement_file = true;
 
-// Some global variables and buffers
-// ring buffer to buffer new measurements
-circular_queue<float> measurements_buffer(32);
-// ring buffer to buffer indices for those measurements
-circular_queue<uint32_t> indices_buffer(32);
-// measurement file buffer
-const int measurement_file_buffer_size = 256;
-float measurement_file_buffer[measurement_file_buffer_size];
-uint32_t measurements_in_file_buffer = 0;
+// A single queue keeps the timestamp and value in lockstep structurally,
+// rather than by the hand-maintained invariant the two parallel queues relied
+// on ("NOTE: we assume that this buffer always has the same size!").
+struct Sample {
+  uint32_t t_rel_ms;
+  float v;
+};
+
+circular_queue<Sample> sample_queue(64);
+
+infrasound::Diagnostics g_diag;
+infrasound::FrameDecoder g_decoder;
+
+// Sensor-clock origin for the current part file.
+uint32_t sensor_t0 = 0;
+bool sensor_t0_valid = false;
+uint32_t last_accepted_ms = 0;  // service-module millis(), for reseed timing
+
+// Sensor-clock origin. t_rel_ms == 0 means "the instant of the first accepted
+// frame", which is NOT the instant the service module booted — boot, SD init,
+// WiFi association and NTP all happen first. service_millis_at_t0 records the
+// local clock at that instant so the logger can turn t_rel_ms into wall-clock
+// time correctly; using start_timestamp alone would shift every absolute
+// timestamp early by however long startup took.
+uint32_t service_millis_at_t0 = 0;
 
 String measurement_file_name;
-uint32_t measurements_returned_already = 0;
 
 IPAddress local_IP(192, 168, 4, 1);
 IPAddress gateway(192, 168, 4, 1);
 IPAddress subnet(255, 255, 255, 0);
 
+void ledTick(uint32_t now_ms) {
+  infrasound::LedState state;
+  if (!is_sd_card_available) {
+    state = infrasound::LedState::SdFailure;
+  } else if (is_measurement_running && !loggerIsLogging()) {
+    // "We are supposed to be logging but are not" — a real failure. A
+    // deliberate stop clears is_measurement_running too, so analysis mode
+    // keeps the heartbeat, per the contract in led_status.h.
+    state = infrasound::LedState::NotLogging;
+  } else if (start_timestamp == 0) {
+    state = infrasound::LedState::NoTime;
+  } else {
+    state = infrasound::LedState::Ok;
+  }
+  // LED_BUILTIN on the D1 Mini is active LOW.
+  digitalWrite(LED_BUILTIN, infrasound::ledOn(state, now_ms) ? LOW : HIGH);
+}
+
 // forward declarations
 bool initWifi();
 void initWebserver();
 void pollSensorISR();
-bool openMeasurementFileAppending();
 
 void reformatMsg() {
   cout << F("Try reformatting the card.  For best results use\n");
@@ -163,174 +201,6 @@ void onNotFound(AsyncWebServerRequest *request) {
   request->send(404, "text/plain", "Not found");
 }
 
-// buffer_size must be at least 30 bytes large
-int generateMeasurementJson(uint8_t *buffer, size_t buffer_size,
-                            uint32_t number_of_measurements,
-                            uint32_t next_start_idx,
-                            uint32_t bytes_to_seek_measurement) {
-  // If measurement_file are open currently... close them and
-  // remember to open them before leaving this function
-  bool closed_measurement_file = false;
-  if (measurement_file.isOpen()) {
-    measurement_file.close();
-    closed_measurement_file = true;
-  }
-  FsFile value_file;
-  if (!value_file.open(measurement_file_name.c_str(), O_RDONLY)) {
-    cout << "Failed to open measurement file " << measurement_file_name << endl;
-    return 0;
-  }
-
-  // Seek to the next measurements
-  if (!value_file.seek(bytes_to_seek_measurement +
-                       measurements_returned_already * 4)) {
-    cout << "Failed to seek "
-         << bytes_to_seek_measurement + measurements_returned_already * 4
-         << " bytes in " << measurement_file_name << endl;
-    if (closed_measurement_file) {
-      openMeasurementFileAppending();
-    }
-    value_file.close();
-    return 0;
-  }
-
-  size_t bytes_in_buffer = 0;
-  char number_buffer[21];
-
-  if (measurements_returned_already == 0) {
-    memcpy(buffer + bytes_in_buffer, "{\n\"preassure\":[", 15);
-    bytes_in_buffer += 15;
-  }
-  float preassure;
-  while (measurements_returned_already < number_of_measurements) {
-    if (value_file.read(&preassure, 4) < 4) {
-      // there are no more timestamps in the file
-      cout << "WARNING: File ran out of measurements" << endl;
-      value_file.close();
-      return bytes_in_buffer;
-    }
-    // convert preassure into asci - left aligned string
-    dtostrf(preassure, -1, 7, number_buffer);
-    uint32_t digits = strlen(number_buffer);
-    memcpy(buffer + bytes_in_buffer, number_buffer, digits);
-    bytes_in_buffer += digits;
-    ++measurements_returned_already;
-    if (measurements_returned_already == number_of_measurements) {
-      buffer[bytes_in_buffer++] = ']';
-      buffer[bytes_in_buffer++] = ',';
-      buffer[bytes_in_buffer++] = '\n';
-    } else {
-      buffer[bytes_in_buffer++] = ',';
-      if (buffer_size - bytes_in_buffer < 23) {
-        // potentially not enough space in buffer for next measurement
-        value_file.close();
-        if (closed_measurement_file) {
-          openMeasurementFileAppending();
-        }
-        return bytes_in_buffer;
-      }
-    }
-  }
-
-  if (bytes_in_buffer == 0 && is_json_finalized) {
-    measurements_returned_already = 0;
-    value_file.close();
-    is_json_finalized = false;
-    if (closed_measurement_file) {
-      openMeasurementFileAppending();
-    }
-    return bytes_in_buffer;
-  }
-
-  if (bytes_in_buffer - buffer_size < 39) {
-    is_json_finalized = false;
-    value_file.close();
-    if (closed_measurement_file) {
-      openMeasurementFileAppending();
-    }
-    return bytes_in_buffer;
-  }
-  value_file.close();
-  memcpy(buffer + bytes_in_buffer, "\"next_start_idx\":", 17);
-  bytes_in_buffer += 17;
-  // convert next_start_idx into asci
-  size_t string_start_idx = sizeof(number_buffer) - 1;
-  number_buffer[string_start_idx] = '\0';
-  do {
-    number_buffer[--string_start_idx] =
-        next_start_idx % 10 + '0'; // add '0' = 48 in ascii
-    next_start_idx /= 10;
-  } while (next_start_idx != 0);
-  size_t digit_count = sizeof(number_buffer) - 1 - string_start_idx;
-  memcpy(buffer + bytes_in_buffer, number_buffer + string_start_idx,
-         digit_count);
-  bytes_in_buffer += digit_count;
-
-  memcpy(buffer + bytes_in_buffer, "\n}", 2);
-  bytes_in_buffer += 2;
-  is_json_finalized = true;
-
-  if (closed_measurement_file) {
-    openMeasurementFileAppending();
-  }
-  return bytes_in_buffer;
-}
-
-void onGetMeasurement(AsyncWebServerRequest *request) {
-  cout << "/measurements were requested" << endl;
-  uint32_t start_with_idx, max_length;
-  if (request->hasParam("start_with_idx")) {
-    String start_with_idx_str = request->getParam("start_with_idx")->value();
-    char *end_ptr;
-    start_with_idx = strtoul(start_with_idx_str.c_str(), &end_ptr, 10);
-  } else {
-    cout << "INFO: /measurement request doesn't have start_with_idx" << endl;
-    start_with_idx = 0;
-  }
-  if (request->hasParam("max_length")) {
-    String max_length_str = request->getParam("max_length")->value();
-    char *end_ptr;
-    max_length = strtoul(max_length_str.c_str(), &end_ptr, 10);
-  } else {
-    cout << "WARNING: /measurement request doesn't have max_length" << endl;
-    max_length = 5000;
-  }
-
-  // Find out where to seek for the first measurement
-  FsFile value_file;
-  if (!value_file.open(measurement_file_name.c_str(), O_RDONLY)) {
-    cout << "Failed to open measurement file: " << measurement_file_name
-         << endl;
-    request->send(500);
-    return;
-  }
-  // seek to starting point in files such that mx_length timestamp/measurement
-  // pairs are returned
-  uint32_t n_measurements_in_file = (uint32_t)value_file.fileSize() / 4;
-  max_length = min(max_length, n_measurements_in_file);
-  uint32_t seek_to_measurement =
-      max(start_with_idx, n_measurements_in_file - max_length);
-  // recompute how many measurements should be read:
-  max_length = n_measurements_in_file - seek_to_measurement;
-  uint32_t next_start_idx = start_with_idx + max_length;
-  // seek accordingly
-  uint32_t bytes_to_seek_measurement = seek_to_measurement * 4;
-  value_file.close();
-
-  // Respond in chunks to not block the esp completely
-  AsyncWebServerResponse *response = request->beginChunkedResponse(
-      "application/json",
-      [max_length = max_length, next_start_idx = next_start_idx,
-       bytes_to_seek_measurement = bytes_to_seek_measurement](
-          uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-        return generateMeasurementJson(buffer, maxLen, max_length,
-                                       next_start_idx,
-                                       bytes_to_seek_measurement);
-      });
-  response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
-  request->send(response);
-}
-
 void onGetDownloads(AsyncWebServerRequest *request) {
   AsyncJsonResponse *response = new AsyncJsonResponse();
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
@@ -338,129 +208,310 @@ void onGetDownloads(AsyncWebServerRequest *request) {
   JsonArray file_list = root["files"].to<JsonArray>();
 
   FsFile directory;
-  directory.open("/measurements", O_RDONLY);
+  if (!directory.open("/measurements", O_RDONLY)) {
+    response->setLength();
+    request->send(response);
+    return;
+  }
   directory.rewind();
+
   FsFile file;
-  char file_name[29];
+  char file_name[64];
   while (file.openNext(&directory, O_RDONLY)) {
-    if (!file.isHidden()) {
-      file.getName(file_name, sizeof(file_name));
-      // if (strcmp(&file_name[strlen(file_name) - 2], "ms") == 0) {
-      //   continue;
-      // }
-      cout << "DEBUG: " << file_name << endl;
-      file_list.add(file_name);
+    if (file.isHidden() || file.isDir()) {
+      file.close();
+      continue;
     }
+    file.getName(file_name, sizeof(file_name));
+    // isHidden() reflects the FAT hidden attribute, not a leading dot, so
+    // /measurements/.run (the run counter written by
+    // readAndIncrementRunCounter()) would otherwise show up here as a
+    // one-record "legacy" file the user can click Analyse on.
+    if (file_name[0] == '.') {
+      file.close();
+      continue;
+    }
+
+    uint8_t header[infrasound::MF_HEADER_SIZE];
+    const int read = file.read(header, sizeof(header));
+    infrasound::MeasurementFileHeader parsed{};
+    const bool has_header =
+        read == static_cast<int>(sizeof(header)) &&
+        infrasound::mfParseHeader(header, &parsed);
+
+    JsonObject entry = file_list.add<JsonObject>();
+    entry["name"] = file_name;
+    entry["bytes"] = file.fileSize();
+    entry["records"] =
+        infrasound::mfRecordCount(file.fileSize(), !has_header);
+    entry["epoch0_ms"] = has_header ? parsed.epoch0_ms : 0;
+    entry["legacy"] = !has_header;
+
     file.close();
   }
+  directory.close();
+
   response->setLength();
   request->send(response);
 }
 
-void onDownload(AsyncWebServerRequest *request) {
-  if (!request->hasParam("file")) {
-    request->send(500);
-  }
-  String file_name = request->getParam("file")->value();
-  cout << "Sending file " << file_name << " in a chunked response." << endl;
+namespace {
 
-  AsyncWebServerResponse *response = request->beginChunkedResponse(
-      "audio/wav",
-      [file_name = file_name](uint8_t *buffer, size_t maxLen,
-                              size_t index) -> size_t {
-        FsFile file;
-        if (!file.open(("/measurements/" + file_name).c_str(), O_RDONLY)) {
-          cout << "Error: could not open file " << "/measurements/" + file_name
-               << endl;
-          return 0;
-        }
-
-        uint32_t offset = 0;
-        // seek to current position
-        if (index == 0) {
-          memcpy(buffer, "data", 4);
-          uint32_t file_size = file.fileSize();
-          memcpy(buffer + 4, reinterpret_cast<char *>(&file_size), 4);
-          maxLen -= 8;
-          offset = 8;
-        }
-        file.seek(index);
-        size_t bytes_read = file.read(buffer + offset, maxLen);
-        file.close();
-        return bytes_read;
-      });
-
-  char name_buffer[28 + file_name.length()];
-  memcpy(name_buffer + 0, "attachment; filename=\"", 22);
-  memcpy(name_buffer + 22, file_name.c_str(), file_name.length());
-  memcpy(name_buffer + 22 + file_name.length(), ".raw\"\0", 6);
-
-  response->addHeader("Content-Disposition", name_buffer);
-
-  // add file size to header
+// Opens a measurement file once per request. The FsFile is owned by a
+// shared_ptr captured in the chunk lambda, so it stays open for the life of
+// the response and closes when the response is destroyed. The previous code
+// opened and closed the file on every chunk.
+struct FileContext {
   FsFile file;
-  if (!file.open(("/measurements/" + file_name).c_str(), O_RDONLY)) {
-    cout << "Error: could not open file " << "/measurements/" + file_name
-         << endl;
-    request->send(500);
-    return;
-  }
-  uint64_t file_size_bytes = file.fileSize();
-  file.close();
-  file_size_bytes += 8; // for header
-  char length_buffer[29];
-  snprintf(length_buffer, 29, "%llu", file_size_bytes);
-  response->addHeader("Content-Length", length_buffer);
+  bool legacy = false;
+  uint64_t epoch0_ms = 0;
+  uint32_t total_records = 0;
+  ~FileContext() { if (file.isOpen()) file.close(); }
+};
 
-  request->send(response);
+std::shared_ptr<FileContext> openMeasurement(const String& name) {
+  auto ctx = std::make_shared<FileContext>();
+  const String path = "/measurements/" + name;
+  if (!ctx->file.open(path.c_str(), O_RDONLY)) {
+    return nullptr;
+  }
+
+  uint8_t header[infrasound::MF_HEADER_SIZE];
+  const int read = ctx->file.read(header, sizeof(header));
+  infrasound::MeasurementFileHeader parsed{};
+  if (read == static_cast<int>(sizeof(header)) &&
+      infrasound::mfParseHeader(header, &parsed)) {
+    ctx->legacy = false;
+    ctx->epoch0_ms = parsed.epoch0_ms;
+  } else {
+    ctx->legacy = true;
+    ctx->epoch0_ms = 0;
+  }
+  ctx->total_records =
+      infrasound::mfRecordCount(ctx->file.fileSize(), ctx->legacy);
+  return ctx;
 }
 
-void onStaticFile(AsyncWebServerRequest *request) {
-  String url = request->url();
-  String contentType;
-  if (url.endsWith(".html"))
-    contentType = "text/html";
-  else if (url.endsWith(".css"))
-    contentType = "text/css";
-  else if (url.endsWith(".js"))
-    contentType = "application/javascript";
-  else if (url.endsWith(".wasm"))
-    contentType = "application/wasm";
-  else if (url.endsWith(".ico"))
-    contentType = "image/x-icon";
-  else
-    contentType = "text/plain";
+uint32_t paramU32(AsyncWebServerRequest* request, const char* name,
+                  uint32_t fallback) {
+  if (!request->hasParam(name)) return fallback;
+  return static_cast<uint32_t>(
+      strtoul(request->getParam(name)->value().c_str(), nullptr, 10));
+}
 
-  String ssd_path = "/www/static" + url;
+// Clamps [*from, *from + *count) to the file's record range. *from must
+// already be <= ctx.total_records when called, so ctx.total_records - *from
+// cannot underflow. Compares by subtraction rather than *from + *count >
+// ctx.total_records: both are uint32_t, so that sum wraps modulo 2^32 -- a
+// query string like count=4294967246 (strtoul happily returns it) can make
+// from + count wrap back below total_records, defeating the clamp entirely
+// and leaving count near 4.29 billion.
+void clampRange(const FileContext& ctx, uint32_t* from, uint32_t* count) {
+  if (*from > ctx.total_records) *from = ctx.total_records;
+  if (*count > ctx.total_records - *from) *count = ctx.total_records - *from;
+}
 
-  cout << "File " << ssd_path << " was requested" << endl;
+// Reads record `index` into t and v, handling both formats.
+bool readRecord(FileContext& ctx, uint32_t index, uint32_t* t, float* v) {
+  if (ctx.legacy) {
+    if (!ctx.file.seek(static_cast<uint64_t>(index) * 4)) return false;
+    if (ctx.file.read(v, 4) < 4) return false;
+    *t = infrasound::mfLegacyTimestamp(index);
+    return true;
+  }
+  const uint64_t at = infrasound::MF_HEADER_SIZE +
+                      static_cast<uint64_t>(index) * infrasound::MF_RECORD_SIZE;
+  if (!ctx.file.seek(at)) return false;
+  uint8_t rec[infrasound::MF_RECORD_SIZE];
+  if (ctx.file.read(rec, sizeof(rec)) < static_cast<int>(sizeof(rec))) {
+    return false;
+  }
+  infrasound::mfParseRecord(rec, t, v);
+  return true;
+}
 
-  // send 128 bytes as html text
+}  // namespace
+
+// Binary: 32-byte header followed by `count` 8-byte records from `from`.
+// Serves the analysis page and enables progressive rendering and zoom.
+void onRaw(AsyncWebServerRequest *request) {
+  if (!request->hasParam("file")) {
+    request->send(400, "text/plain", "missing file parameter");
+    return;
+  }
+  const String file_name = request->getParam("file")->value();
+  auto ctx = openMeasurement(file_name);
+  if (!ctx) {
+    request->send(404, "text/plain", "no such measurement file");
+    return;
+  }
+
+  uint32_t from = paramU32(request, "from", 0);
+  if (from > ctx->total_records) from = ctx->total_records;
+  uint32_t count = paramU32(request, "count", ctx->total_records - from);
+  clampRange(*ctx, &from, &count);
+
+  const uint64_t body_bytes =
+      infrasound::MF_HEADER_SIZE +
+      static_cast<uint64_t>(count) * infrasound::MF_RECORD_SIZE;
+
   AsyncWebServerResponse *response = request->beginChunkedResponse(
-      contentType.c_str(),
-      [ssd_path = ssd_path](uint8_t *buffer, size_t maxLen,
-                            size_t index) -> size_t {
-        FsFile static_file;
-        if (!static_file.open(ssd_path.c_str(), O_RDONLY)) {
-          cout << "Failed to open static_file" << endl;
-          return 0;
+      "application/octet-stream",
+      [ctx, from, count, body_bytes](uint8_t *buffer, size_t maxLen,
+                                     size_t index) -> size_t {
+        if (index >= body_bytes) return 0;
+
+        // maxLen == 0 cannot be turned into forward progress: there is no
+        // buffer to write into. AsyncWebServer's chunked-response contract
+        // treats any 0 return as end-of-response -- it has no distinct
+        // "not ready yet, but not finished" signal -- so this one case
+        // cannot be fixed from inside the callback. Left explicit rather
+        // than falling through so the limitation is visible. Believed
+        // unreachable in practice: the library only invokes this callback
+        // with a real, positive-capacity TCP write buffer.
+        if (maxLen == 0) return 0;
+
+        size_t written = 0;
+
+        if (index < infrasound::MF_HEADER_SIZE) {
+          infrasound::MeasurementFileHeader h{};
+          h.version   = infrasound::MF_VERSION;
+          h.rec_size  = infrasound::MF_RECORD_SIZE;
+          h.rate_hz   = infrasound::MF_RATE_HZ;
+          h.epoch0_ms = ctx->epoch0_ms;
+          uint8_t header[infrasound::MF_HEADER_SIZE];
+          infrasound::mfPackHeader(h, header);
+          const size_t remaining = infrasound::MF_HEADER_SIZE - index;
+          written = remaining < maxLen ? remaining : maxLen;
+          memcpy(buffer, header + index, written);
+          return written;
         }
-        if (!static_file.seek(index)) {
-          cout << "Failed to seek in static_file" << endl;
+
+        // Position-based, not record-based: resume mid-record if the
+        // previous chunk ended inside one. A record-aligned loop like
+        // `while (written + MF_RECORD_SIZE <= maxLen)` returns 0 whenever
+        // maxLen < MF_RECORD_SIZE, and AsyncWebServer reads a 0 return as
+        // end-of-response -- silently truncating the download after
+        // whatever was already sent. Re-packing the current record each
+        // iteration is cheap and only the first iteration can be partial.
+        const uint64_t body_off = index - infrasound::MF_HEADER_SIZE;
+        uint32_t rec_index =
+            from + static_cast<uint32_t>(body_off / infrasound::MF_RECORD_SIZE);
+        size_t rec_off =
+            static_cast<size_t>(body_off % infrasound::MF_RECORD_SIZE);
+
+        while (written < maxLen && (rec_index - from) < count) {
+          uint32_t t = 0;
+          float v = 0.0f;
+          if (!readRecord(*ctx, rec_index, &t, &v)) break;
+          uint8_t rec[infrasound::MF_RECORD_SIZE];
+          infrasound::mfPackRecord(t, v, rec);
+
+          const size_t avail = infrasound::MF_RECORD_SIZE - rec_off;
+          const size_t take = avail < (maxLen - written) ? avail : (maxLen - written);
+          memcpy(buffer + written, rec + rec_off, take);
+          written += take;
+          rec_off += take;
+          if (rec_off == infrasound::MF_RECORD_SIZE) {
+            rec_off = 0;
+            ++rec_index;
+          }
         }
-        size_t read_bytes = static_file.read(buffer, maxLen);
-        static_file.close();
-        return read_bytes;
+        return written;
       });
+
   response->addHeader("InfrasoundSensor", "ESP Infrasound sensor webserver");
   request->send(response);
 }
 
-void onIndex(AsyncWebServerRequest *request) {
-  String RedirectUrl = "http://";
-  RedirectUrl += WiFi.localIP().toString();
-  RedirectUrl += "/index.html";
-  request->redirect(RedirectUrl);
+// CSV for Excel/Python. Fixed-width lines are what make the chunk callback
+// restartable: record N always sits at output offset 20 + N*24.
+void onDownload(AsyncWebServerRequest *request) {
+  if (!request->hasParam("file")) {
+    request->send(400, "text/plain", "missing file parameter");
+    return;
+  }
+  const String file_name = request->getParam("file")->value();
+  auto ctx = openMeasurement(file_name);
+  if (!ctx) {
+    request->send(404, "text/plain", "no such measurement file");
+    return;
+  }
+
+  uint32_t from = paramU32(request, "from", 0);
+  if (from > ctx->total_records) from = ctx->total_records;
+  uint32_t count = paramU32(request, "count", ctx->total_records - from);
+  clampRange(*ctx, &from, &count);
+
+  const uint64_t body_bytes =
+      infrasound::CSV_HEADER_LEN +
+      static_cast<uint64_t>(count) * infrasound::CSV_LINE_LEN;
+
+  AsyncWebServerResponse *response = request->beginChunkedResponse(
+      "text/csv",
+      [ctx, from, count, body_bytes](uint8_t *buffer, size_t maxLen,
+                                     size_t index) -> size_t {
+        if (index >= body_bytes) return 0;
+
+        // maxLen == 0 cannot be turned into forward progress: there is no
+        // buffer to write into. AsyncWebServer's chunked-response contract
+        // treats any 0 return as end-of-response -- it has no distinct
+        // "not ready yet, but not finished" signal -- so this one case
+        // cannot be fixed from inside the callback. Left explicit rather
+        // than falling through so the limitation is visible. Believed
+        // unreachable in practice: the library only invokes this callback
+        // with a real, positive-capacity TCP write buffer.
+        if (maxLen == 0) return 0;
+
+        size_t written = 0;
+        char line[infrasound::CSV_LINE_LEN + 1];
+
+        if (index < infrasound::CSV_HEADER_LEN) {
+          char header[infrasound::CSV_HEADER_LEN + 1];
+          infrasound::csvHeader(header);
+          const size_t remaining = infrasound::CSV_HEADER_LEN - index;
+          written = remaining < maxLen ? remaining : maxLen;
+          memcpy(buffer, header + index, written);
+          return written;
+        }
+
+        // Position-based, not record-based: resume mid-line if the previous
+        // chunk ended inside one. Returning 0 here would be read as
+        // end-of-response and silently truncate the download, so the
+        // callback must always make progress when there is at least one
+        // byte of space -- a record-aligned loop (`written + CSV_LINE_LEN <=
+        // maxLen`) returns 0 whenever maxLen < CSV_LINE_LEN, which
+        // AsyncWebServer cannot distinguish from EOF.
+        const uint64_t body_off = index - infrasound::CSV_HEADER_LEN;
+        uint32_t rec_index =
+            from + static_cast<uint32_t>(body_off / infrasound::CSV_LINE_LEN);
+        size_t line_off =
+            static_cast<size_t>(body_off % infrasound::CSV_LINE_LEN);
+
+        while (written < maxLen && (rec_index - from) < count) {
+          uint32_t t = 0;
+          float v = 0.0f;
+          if (!readRecord(*ctx, rec_index, &t, &v)) break;
+          infrasound::csvLine(ctx->epoch0_ms + t, v, line);
+
+          const size_t avail = infrasound::CSV_LINE_LEN - line_off;
+          const size_t take = avail < (maxLen - written) ? avail : (maxLen - written);
+          memcpy(buffer + written, line + line_off, take);
+          written += take;
+          line_off += take;
+          if (line_off == infrasound::CSV_LINE_LEN) {
+            line_off = 0;
+            ++rec_index;
+          }
+        }
+        return written;
+      });
+
+  String disposition = "attachment; filename=\"" + file_name + ".csv\"";
+  response->addHeader("Content-Disposition", disposition);
+  // No Content-Length: this is a chunked response, and setting both is what
+  // helped break the previous implementation.
+  request->send(response);
 }
 
 void onConnect(AsyncEventSourceClient *client) {
@@ -473,15 +524,16 @@ void onConnect(AsyncEventSourceClient *client) {
 
 void onStartTimestamp(AsyncWebServerRequest *request) {
   AsyncResponseStream *response = request->beginResponseStream("text/plain");
-  response->printf("%llu", start_timestamp);
+  // See loggerEpoch0Ms() in logger.h for why this is centralised.
+  const uint64_t epoch0 = loggerEpoch0Ms();
+  response->printf("%llu", epoch0);
   request->send(response);
 }
 
 void onStartMeasurement(AsyncWebServerRequest *request) {
-  AsyncResponseStream *response = request->beginResponseStream("text/plain");
   if (!is_measurement_running) {
     cout << "Starting measurement" << endl;
-    create_new_measurement_file = true;
+    loggerStartNewPart();
     cout << "Adding handler for /measurement_event" << endl;
     events.onConnect(onConnect);
     server.addHandler(&events);
@@ -493,7 +545,6 @@ void onStartMeasurement(AsyncWebServerRequest *request) {
 }
 
 void onStopMeasurement(AsyncWebServerRequest *request) {
-  AsyncResponseStream *response = request->beginResponseStream("text/plain");
   if (is_measurement_running) {
     cout << "Stopping measurement" << endl;
     cout << "Removing handler for /measurement_event" << endl;
@@ -503,39 +554,85 @@ void onStopMeasurement(AsyncWebServerRequest *request) {
     cout << "Measurements are already stopped" << endl;
   }
   is_measurement_running = false;
+  loggerStop();
   request->send(200);
 }
 
 void initWebserver() {
 
-  cout << "Serving static files" << endl;
-  server.on("/", HTTP_GET, onIndex);
-  server.on("/index.html", HTTP_GET, onStaticFile);
-  server.on("/analyse.html", HTTP_GET, onStaticFile);
-  server.on("/wifi.html", HTTP_GET, onStaticFile);
-  server.on("/analyse_client.js", HTTP_GET, onStaticFile);
-  server.on("/infrasound_client.js", HTTP_GET, onStaticFile);
-  server.on("/favicon.ico", HTTP_GET, onStaticFile);
-  server.on("/pffft/pffft.js", HTTP_GET, onStaticFile);
-  server.on("/pffft/pffft.wasm", HTTP_GET, onStaticFile);
-  server.on("/bootstrap/bootstrap.bundle.min.js", HTTP_GET, onStaticFile);
-  server.on("/bootstrap/bootstrap.min.css", HTTP_GET, onStaticFile);
-  server.on("/highcharts/highcharts.js", HTTP_GET, onStaticFile);
-  server.on("/highcharts/exporting.js", HTTP_GET, onStaticFile);
-  server.on("/highcharts/export-data.js", HTTP_GET, onStaticFile);
+  // AsyncFileResponse's MIME table has no .wasm case and serveStatic offers no
+  // per-extension override, so WebAssembly would otherwise be served as
+  // text/plain. Emscripten falls back to ArrayBuffer instantiation, but that is
+  // slower and depends on a catch path -- serve the correct type explicitly.
+  server.on("/pffft/pffft.wasm", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(LittleFS, "/static/pffft/pffft.wasm", "application/wasm");
+  });
 
-  cout << "Serving /measurements" << endl;
-  server.on("/measurements", HTTP_GET, onGetMeasurement);
   cout << "serving /downloads" << endl;
   server.on("/downloads", HTTP_GET, onGetDownloads);
   cout << "serving /download" << endl;
   server.on("/download", HTTP_GET, onDownload);
+  cout << "serving /raw" << endl;
+  server.on("/raw", HTTP_GET, onRaw);
   cout << "serving /start_timestamp" << endl;
   server.on("/start_timestamp", HTTP_GET, onStartTimestamp);
   cout << "serving /start_measurements" << endl;
   server.on("/start_measurements", HTTP_GET, onStartMeasurement);
   cout << "serving /stop_measurements" << endl;
   server.on("/stop_measurements", HTTP_GET, onStopMeasurement);
+
+  // Serve everything under LittleFS /static/ directly, replacing the old
+  // per-request open/seek/read/close handler (onStaticFile) that walked the
+  // SD card on every ~1.4 KB chunk. setDefaultFile("index.html") makes "/"
+  // serve the index directly (200), so the old onIndex redirect handler is
+  // gone too -- no reason to pay a redirect round trip when serveStatic can
+  // just answer the request.
+  //
+  // Registered last, after every explicit server.on(...) route above
+  // (including the pffft.wasm override), ON PURPOSE: ESPAsyncWebServer
+  // resolves requests in strict registration order, trying each handler's
+  // canHandle() in turn, so an explicit route registered after serveStatic
+  // would still win -- but a static handler registered after the explicit
+  // routes can never shadow them. Today AsyncStaticWebHandler::canHandle()
+  // only matches when the requested file actually exists under /static/, so
+  // a same-named endpoint like /downloads would already fall through even
+  // with serveStatic registered first; registering it last makes that
+  // safety structural rather than a fact about the library's internals that
+  // this codebase cannot compile against to verify.
+  //
+  // Two registrations, most specific first: the vendored third-party blobs
+  // under /highcharts/, /bootstrap/ and /pffft/ are versioned-in-place and
+  // never change without a content update, so they get a one-year immutable
+  // cache. Everything else under /static/ (index.html, analyse.html, the
+  // *_client.js files, favicon.ico, ...) is source this project edits
+  // in-place per the README's SD-card update workflow, so it must not be
+  // cached long-term -- a browser that already fetched measurement_parsing.js
+  // under an immutable header would keep using the stale copy for a year
+  // after a reboot picks up a newer file format. Both prefix handlers are
+  // registered before the "/" catch-all, so AsyncStaticWebHandler's
+  // registration-order matching gives the prefix handler first refusal on
+  // its own paths; "/" only ever sees requests the prefix handlers declined.
+  cout << "Serving vendored static assets from LittleFS (long-lived cache)"
+       << endl;
+  server.serveStatic("/highcharts/", LittleFS, "/static/highcharts/")
+      .setCacheControl("max-age=31536000, immutable");
+  server.serveStatic("/bootstrap/", LittleFS, "/static/bootstrap/")
+      .setCacheControl("max-age=31536000, immutable");
+  server.serveStatic("/pffft/", LittleFS, "/static/pffft/")
+      .setCacheControl("max-age=31536000, immutable");
+
+  // gzip: AsyncStaticWebHandler (lacamera/ESPAsyncWebServer 3.1.0) already
+  // implements the adaptive gzip heuristic via _gzipFirst/_gzipStats in
+  // WebHandlers.cpp -- if "<path>.gz" exists next to "<path>" under
+  // /static/, it is served automatically with Content-Encoding: gzip. This
+  // needs no device code; it is purely a PC-side packaging choice when
+  // populating /www/static on the SD card before the Task 17 sync. See
+  // README (Task 23) for the packaging note.
+  cout << "Serving static files from LittleFS" << endl;
+  server.serveStatic("/", LittleFS, "/static/")
+      .setDefaultFile("index.html")
+      .setCacheControl("no-cache");
+
   server.onNotFound(onNotFound);
 
   cout << "Setting up handler for /measurement_event" << endl;
@@ -563,13 +660,39 @@ bool initWifi() {
   return true;
 }
 
+// Returns true when a real time was obtained. The previous implementation
+// ignored timeClient.update(), so on failure getEpochTime() returned ~0 and
+// `epochTime * 1000 - millis()` underflowed the uint64 into an enormous value,
+// producing a garbage filename.
+bool tryUpdateTimestamp() {
+  if (!timeClient.update()) {
+    ++g_diag.ntp_failures;
+    return false;
+  }
+  const time_t epochTime = timeClient.getEpochTime();
+  if (epochTime <= 0) {
+    ++g_diag.ntp_failures;
+    return false;
+  }
+  const uint64_t epoch_ms = static_cast<uint64_t>(epochTime) * 1000ull;
+  const uint64_t uptime_ms = millis();
+  if (epoch_ms <= uptime_ms) {
+    ++g_diag.ntp_failures;
+    return false;
+  }
+  start_timestamp = epoch_ms - uptime_ms;
+  cout << "Starttimestamp is " << start_timestamp << " ms" << endl;
+  return true;
+}
+
 void initTimestamp() {
   cout << "Initializing start-timestamp" << endl;
   timeClient.begin();
-  timeClient.update();
-  time_t epochTime = timeClient.getEpochTime();
-  start_timestamp = epochTime * 1000 - millis();
-  cout << "Starttimestamp is " << start_timestamp << " ms" << endl;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (tryUpdateTimestamp()) return;
+    delay(500);
+  }
+  cout << "NTP unavailable; recording with relative timestamps" << endl;
 }
 
 String millisecondsToTimeString(uint64_t milliseconds) {
@@ -598,41 +721,6 @@ String millisecondsToTimeString(uint64_t milliseconds) {
   return String(buffer);
 }
 
-void createMeasurementFile() {
-  if (!is_sd_card_available) {
-    cout << "Error: Couldn't write measurements to disk - SD card not "
-            "available."
-         << endl;
-    return;
-  }
-  if (!sd.exists("/measurements")) {
-    cout << "Creating /measurements folder on sd-card" << endl;
-    if (!sd.mkdir("/measurements")) {
-      cout << "Error: Couldn't create /measurements directory. Check SD-Card."
-           << endl;
-      return;
-    }
-  }
-  String base_name;
-  if (start_timestamp == 0) {
-    base_name = "/measurements/unbekannt";
-  } else {
-    base_name = "/measurements/" + millisecondsToTimeString(start_timestamp);
-  }
-  measurement_file_name = base_name;
-  uint32_t retries = 0;
-  while (sd.exists(measurement_file_name.c_str())) {
-    ++retries;
-    measurement_file_name = base_name + String("_") + String(retries);
-  }
-  cout << "Creating file " << measurement_file_name << endl;
-  if (!measurement_file.open(measurement_file_name.c_str(),
-                             O_WRONLY | O_CREAT | O_TRUNC)) {
-    cout << "Failed to create file " << measurement_file_name << endl;
-  }
-  measurement_file.close();
-}
-
 void wait_forever() {
   cout << "Waiting forever" << endl;
   while (1) {
@@ -654,11 +742,30 @@ void setup() {
   cout << ARDUINO_BOARD << endl;
   cout << "##########################" << endl;
 
+  // GPIO2 is a boot-strap pin that must be HIGH at reset, so it is only driven
+  // as an output here, after boot.
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);  // solid on while the SD card is being found
+
   // Initialize SD-Card
   while (!initSdCard()) {
     cout << "Failed to initialize SD-Card..." << endl;
     delay(1000);
     cout << "Trying again" << endl;
+  }
+
+  // Copy /www/static from the SD card into LittleFS so the HTTP server never
+  // touches the SD card to serve the web UI. Must run before initWebserver(),
+  // which is what actually reads the synced assets (Task 18). Runs
+  // unconditionally, not just when WiFi is up, so the SD card becomes
+  // optional for the web UI after the first successful boot.
+  staticSyncRun();
+
+  const uint32_t run_number = readAndIncrementRunCounter();
+  cout << "Measurement run " << run_number << endl;
+  if (!loggerBegin(run_number)) {
+    cout << "ERROR: could not start logging - measurements will not be saved"
+         << endl;
   }
 
   // init wifi
@@ -715,7 +822,10 @@ void setup() {
 
   // Connection to Arduino serial using software serial
   cout << "Connecting to Sensor Board" << endl;
-  esp_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
+  // 256-byte byte buffer and 2048-entry ISR edge buffer: ~8.25 KB of RAM for
+  // roughly 370 ms of stall tolerance, up from the ~128 ms the library
+  // defaults gave. Insurance on top of removing the stalls, not a substitute.
+  esp_serial.begin(38400, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false, 256, 2048);
   if (!esp_serial) {
     cout << "Invalid EspSoftwareSerial pin configuration, check config!";
     // don't continue with broken configuration
@@ -734,135 +844,195 @@ void setup() {
   }
 }
 
-bool openMeasurementFileAppending() {
-  if (!measurement_file.open(measurement_file_name.c_str(),
-                             O_WRONLY | O_APPEND | O_AT_END)) {
-    cout << "Failed to open measurement file: " << measurement_file_name
-         << endl;
-    return false;
-  }
-  return true;
-}
+namespace {
+constexpr size_t   SSE_BATCH_MAX     = 10;
+constexpr uint32_t SSE_MAX_AGE_MS    = 250;
+constexpr uint32_t SSE_GAP_MS        = 30;  // 1.5 sample periods
 
-void sendMeasurementEvent(uint32_t measurement_idx, float measurement) {
-  char idx_string[11];         // 10 bytes for uint32_t
-  char measurement_string[21]; // 21 bytes for float
-  char semicolon_str[2];
-  strcpy(semicolon_str, ";");
-  utoa(measurement_idx, idx_string, 10);
-  dtostrf(measurement, -1, 7, measurement_string);
-  char message[32];
-  strcpy(message, idx_string);
-  strcat(message, semicolon_str);
-  strcat(message, measurement_string);
-  // cout << "DEBUG: event message string: " << message << endl;
+float    g_sse_values[SSE_BATCH_MAX];
+size_t   g_sse_count   = 0;
+uint32_t g_sse_first_t = 0;
+uint32_t g_sse_last_t  = 0;
+uint32_t g_sse_started_ms = 0;
+}  // namespace
+
+void sseFlush() {
+  if (g_sse_count == 0) return;
+
+  // t0;v0,v1,... — samples in one message are contiguous by construction
+  // because a gap forces a flush, so one timestamp describes the whole batch.
+  char message[192];
+  int n = snprintf(message, sizeof(message), "%lu;",
+                   static_cast<unsigned long>(g_sse_first_t));
+  for (size_t i = 0; i < g_sse_count && n > 0 && n < (int)sizeof(message); ++i) {
+    n += snprintf(message + n, sizeof(message) - n, "%s%.5f",
+                  i == 0 ? "" : ",", static_cast<double>(g_sse_values[i]));
+  }
   events.send(message, "measurement", millis(), false);
+  g_sse_count = 0;
 }
 
-void writeMeasurementFileBuffer() {
-  if (create_new_measurement_file) {
-    createMeasurementFile();
-    create_new_measurement_file = false;
-  }
-  cout << "Writing " << measurements_in_file_buffer
-       << " measurements to SD Card" << endl;
-  if (!openMeasurementFileAppending()) {
+void sseAppend(uint32_t t_rel_ms, float v) {
+  // Skip all formatting when nobody is watching. The previous code formatted
+  // and sent 50 messages a second regardless of whether a client existed.
+  if (!is_measurement_running || !is_wifi_client || events.count() == 0) {
+    g_sse_count = 0;
     return;
   }
-  // Write measurement file buffer to file
-  if (measurement_file.write(
-          reinterpret_cast<uint8_t *>(measurement_file_buffer),
-          measurements_in_file_buffer * 4) != 4 * measurements_in_file_buffer) {
-    cout << "Writing measurement to ssd failed" << endl;
+
+  if (g_sse_count > 0 &&
+      static_cast<uint32_t>(t_rel_ms - g_sse_last_t) > SSE_GAP_MS) {
+    sseFlush();  // a real discontinuity ends the batch
   }
-  measurement_file.close();
-  measurements_in_file_buffer = 0;
+
+  if (g_sse_count == 0) {
+    g_sse_first_t = t_rel_ms;
+    g_sse_started_ms = millis();
+  }
+  g_sse_values[g_sse_count++] = v;
+  g_sse_last_t = t_rel_ms;
+
+  if (g_sse_count >= SSE_BATCH_MAX) {
+    sseFlush();
+  }
+}
+
+void sseTick(uint32_t now_ms) {
+  if (g_sse_count > 0 && (now_ms - g_sse_started_ms) >= SSE_MAX_AGE_MS) {
+    sseFlush();
+  }
 }
 
 void handleNewMeasurements() {
-  if (measurements_in_file_buffer > measurement_file_buffer_size - 8) {
-    writeMeasurementFileBuffer();
-  }
-  // Send data from buffer directly through event socket
-  for (uint32_t i = 0; i < measurements_buffer.available(); ++i) {
-    float measurement = measurements_buffer.pop();
-    uint32_t measurement_idx =
-        indices_buffer.pop(); // NOTE: we assume that this buffer always has
-                              // the same size!
-    measurement_file_buffer[measurements_in_file_buffer++] = measurement;
-    // Send via websocket
-    if (is_measurement_running && is_wifi_client) {
-      sendMeasurementEvent(measurement_idx, measurement);
-    }
+  const size_t pending = sample_queue.available();
+  for (size_t i = 0; i < pending; ++i) {
+    const Sample sample = sample_queue.pop();
+    loggerAppend(sample.t_rel_ms, sample.v);   // Task 12
+    sseAppend(sample.t_rel_ms, sample.v);      // Task 19
   }
 }
 
-float previous_measurement = -4200;
-size_t good_sync_messages = 0;
-size_t bad_sync_messages = 0;
-
-// Automatically syncing serial connection
-bool getMeasurementFromArduino(uint32_t *measurement_idx, float *value) {
-  // Syncing
-  if (esp_serial.available() < 10) {
-    return false;
+void checkSensorForMeasurements() {
+  if (esp_serial.overflow()) {
+    ++g_diag.serial_overflows;
   }
-  // Read a byte and drop it unless a full one byte is read, which signalizes
-  // the start of a package
-  bool is_package_start_synchronized = false;
-  char package_start;
-  esp_serial.read(&package_start, 1);
-  is_package_start_synchronized = package_start == '\xFF';
-  // cout << "DEBUG: got package start: " << static_cast<int>(package_start)
-  // << " and is_package_start_synchronized: " <<
-  // is_package_start_synchronized << endl;
-  if (!is_package_start_synchronized) {
-    cout << "Waiting for valid package start ..." << endl;
-    return false;
-  }
-  // read the value of the measurment
-  esp_serial.read(reinterpret_cast<char *>(value), 4);
-  // read the index of the measurement
-  esp_serial.read(reinterpret_cast<char *>(measurement_idx), 4);
 
-  // read the final byte
-  char package_end;
-  esp_serial.read(&package_end, 1);
-  if (package_end != '\x00') {
-    cout << "Package end is not 0 - dropping the pakcage with idx "
-         << *measurement_idx << " and value " << *value << endl;
-    return false;
+  // Re-arm the decoder after a silence longer than the plausibility window, so
+  // a sensor reboot or a long stall can resynchronise. Never armed as a
+  // fallback for a single frame that failed the check.
+  const uint32_t now = millis();
+  if (last_accepted_ms != 0 &&
+      (now - last_accepted_ms) > infrasound::MAX_PLAUSIBLE_GAP_MS) {
+    g_decoder.armReseed();
   }
-  // cout << "DEBUG read index: " << *measurement_idx << ", and value: " <<
-  // *value << endl;
 
-  return true;
+  while (esp_serial.available() > 0) {
+    char byte;
+    if (esp_serial.read(&byte, 1) < 1) {
+      break;
+    }
+
+    const infrasound::DecodedFrame frame =
+        g_decoder.feed(static_cast<uint8_t>(byte));
+    if (!frame.ok) {
+      continue;  // a rejected byte advances the window by one; never bail out
+    }
+
+    last_accepted_ms = now;
+
+    if (!sensor_t0_valid) {
+      sensor_t0 = frame.t_ms;
+      service_millis_at_t0 = now;
+      sensor_t0_valid = true;
+    } else if (frame.t_ms < sensor_t0) {
+      // The sensor clock ran backwards: the sensor board rebooted. Close this
+      // part and rebase, so the file's timestamps stay monotonic. Rebase
+      // BEFORE opening the new part: openNewPart() writes epoch0_ms from
+      // service_millis_at_t0 immediately, so moving the origin afterwards
+      // would stamp the new part's header with the previous origin.
+      ++g_diag.sensor_reboots;
+      sensor_t0 = frame.t_ms;
+      service_millis_at_t0 = now;
+      loggerStartNewPart();
+    }
+
+    Sample sample;
+    sample.t_rel_ms = static_cast<uint32_t>(frame.t_ms - sensor_t0);
+    sample.v = frame.value;
+
+    if (!sample_queue.push(sample)) {
+      ++g_diag.queue_full_drops;
+    }
+  }
+
+  g_diag.frames_crc_rejected = g_decoder.crcRejects();
+  g_diag.frames_framing_rejected = g_decoder.framingRejects();
 }
 
-void checkArdinoForMeasurements() {
-  while (esp_serial.available() >= 10) {
-    uint32_t measurement_idx;
-    float measurement;
-    if (!getMeasurementFromArduino(&measurement_idx, &measurement)) {
-      return;
-    }
-    bool push_success = measurements_buffer.push(measurement);
-    push_success &= indices_buffer.push(measurement_idx);
-    if (!push_success) {
-      cout << "WARNING: measurement and index buffer ran full ... dropping "
-              "measurements!"
-           << endl;
-    }
+void diagnosticsTick(uint32_t now_ms) {
+  static uint32_t last_report = 0;
+  // Separate primed flag rather than treating 0 as "unset": 0 is also a
+  // legitimate (if near-fatal) heap reading, and conflating them would let a
+  // later, higher reading overwrite the true minimum.
+  static bool heap_primed = false;
+  const uint32_t free_heap = ESP.getFreeHeap();
+  if (!heap_primed || free_heap < g_diag.min_free_heap) {
+    g_diag.min_free_heap = free_heap;
+    heap_primed = true;
   }
+
+  if (now_ms - last_report < 60000) return;
+  last_report = now_ms;
+
+  char line[256];
+  infrasound::formatDiagnostics(g_diag, line, sizeof(line));
+  cout << line << endl;
+
+  // max_loop_interval_ms is a per-window observation, so reset it; the loss
+  // counters are cumulative and must not be reset.
+  g_diag.max_loop_interval_ms = 0;
 }
 
 void loop() {
+  static uint32_t last_loop_ms = 0;
+  const uint32_t now = millis();
+  if (last_loop_ms != 0) {
+    const uint32_t interval = now - last_loop_ms;
+    if (interval > g_diag.max_loop_interval_ms) {
+      g_diag.max_loop_interval_ms = interval;
+    }
+  }
+  last_loop_ms = now;
+
   if (is_measurement_running) {
-    checkArdinoForMeasurements();
-    if (measurements_buffer.available() > 0) {
-      // Let clients know about the new measurements and write everything new
-      // to the event socket and file
+    checkSensorForMeasurements();
+    if (sample_queue.available() > 0) {
       handleNewMeasurements();
+    }
+    loggerTick(now);
+  }
+
+  ledTick(now);
+  diagnosticsTick(now);
+  sseTick(now);
+
+  // NTP may become available after boot if WiFi reconnects. Retry every 60 s
+  // while the time is still unset; later files then get a real epoch0_ms.
+  // The `start_timestamp == 0` guard also makes this fire at most once: a
+  // successful tryUpdateTimestamp() sets start_timestamp, which is what turns
+  // this whole branch off on the next loop() iteration.
+  static uint32_t last_ntp_try = 0;
+  if (is_wifi_client && start_timestamp == 0 && (now - last_ntp_try) > 60000) {
+    last_ntp_try = now;
+    if (tryUpdateTimestamp()) {
+      // The clock just became known for the first time after logging had
+      // already started on relative-only timestamps (the unbekannt file).
+      // Close that part and open a new one so the rest of the recording gets
+      // a correct filename and epoch0_ms, rather than 24 h of wrong ones.
+      // If no sample has arrived yet, loggerStartNewPart() is a no-op and the
+      // still-pending first open simply picks up the now-current
+      // start_timestamp -- see loggerStartNewPart() in logger.cpp.
+      loggerStartNewPart();
     }
   }
 }
