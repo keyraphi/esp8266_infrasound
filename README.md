@@ -75,6 +75,14 @@ alter Software kann deshalb nicht mehr mit einer Platine mit neuer Software komm
 den Sensor auf eine neue Version aktualisieren, müssen **immer beide Platinen** neu programmiert
 werden – nicht nur eine.
 
+**Achtung, zweiter Teil:** Beim Aktualisieren reicht es nicht, nur die beiden Platinen neu zu
+programmieren. Die Webseite liegt nicht im Programm, sondern im Order `static` auf der SD-Karte
+(siehe [Statische Dateien](#statische-dateien)). Kopieren Sie deshalb bei jedem Update **auch den
+`static` Order neu auf die SD-Karte**, bevor Sie den Sensor wieder einschalten. Wird das
+vergessen, läuft neue Firmware mit einer alten Webseite: Die Seite sieht dann kaputt aus, in der
+Liste der Messungen steht `[object Object]` statt der Dateinamen, und jeder Klick auf „Download"
+oder „Analyse" meldet, dass es die Messung nicht gibt.
+
 Konkret läuft diese Verbindung jetzt mit **38400 Baud** statt vorher 9600 Baud. Diese
 Geschwindigkeit ist bewusst gewählt und nicht beliebig: Schneller sollte es nicht sein, weil die
 Webserver-Platine, die die Daten empfängt, gleichzeitig WLAN und den Webserver betreibt. Die

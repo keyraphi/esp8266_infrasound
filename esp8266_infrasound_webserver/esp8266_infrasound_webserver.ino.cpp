@@ -18,6 +18,7 @@
 #include <memory>
 #include <strings.h>
 
+#include "csv_format.h"
 #include "diagnostics.h"
 #include "infrasound_frame.h"
 #include "led_status.h"
