@@ -268,6 +268,59 @@ bestehen – das ist normal und kein Fehler. Das doppelte Blinken ist dagegen au
 echte Störungen reserviert (SD-Karte voll oder Schreibfehler) und bedeutet immer, dass etwas
 nicht in Ordnung ist.
 
+## Diagnose-Zeile (DIAG)
+Neben der Status-LED schreibt der Webserver einmal pro Minute eine zweite, genauere
+Diagnose-Zeile auf seine USB-Konsole. Sie sieht zum Beispiel so aus:
+
+```
+DIAG ovf=1 crc=9 frm=50 qfull=0 sdfail=0 maxloop=179 heap=9216 ntpfail=0 reboots=0
+```
+
+Sieben der neun Zahlen zählen Probleme und sollten im Idealfall bei 0 bleiben. Zwei davon,
+`maxloop` und `heap`, sind keine Fehler, sondern reine Beobachtungswerte.
+
+Die sieben Fehler-Zähler laufen seit dem Einschalten des Geräts mit und werden nie zurückgesetzt.
+Das ist der wichtigste Punkt beim Lesen dieser Zeile: Bleibt eine Zahl über mehrere Minuten
+konstant, ist das zugehörige Problem einmal aufgetreten und tritt gerade nicht mehr auf. Steigt
+eine Zahl dagegen von Minute zu Minute weiter, passiert das Problem noch immer.
+
+| Feld | Bedeutung |
+|---|---|
+| `ovf` | Der Empfangspuffer für die Sensor-Verbindung ist übergelaufen, Bytes gingen verloren. Passiert, wenn die Hauptschleife länger blockiert als der Puffer überbrücken kann, etwa 370 ms. |
+| `crc` | Ein Datenpaket kam beschädigt an und wurde wegen falscher Prüfsumme verworfen. Jedes davon ist ein verlorener Messwert. |
+| `frm` | Ein Paket war intakt, trug aber einen unplausiblen Zeitstempel, mehr als eine Sekunde vom vorherigen entfernt. Das folgt normalerweise auf einen Verlust: Der Empfänger verliert kurz den Anschluss an den Datenstrom und braucht etwa eine Sekunde, um sich neu zu synchronisieren – bei 50 Messungen pro Sekunde kostet das rund 50 Pakete. |
+| `qfull` | Messwerte kamen schneller an, als die Hauptschleife sie verarbeiten konnte; die interne Warteschlange lief voll. |
+| `sdfail` | Schreiben auf die SD-Karte ist fehlgeschlagen. |
+| `maxloop` | Der längste einzelne Durchlauf der Hauptschleife in der letzten Minute, in Millisekunden. **Kein Fehler.** Wird jede Minute zurückgesetzt und beschreibt also die gerade vergangene Minute. |
+| `heap` | Die kleinste Menge an freiem Speicher, die seit dem Einschalten gemessen wurde, in Byte. **Kein Fehler.** Wird nie zurückgesetzt, ist also der bisher schlechteste Wert. |
+| `ntpfail` | Ein Versuch, die Uhrzeit aus dem Internet zu holen, ist fehlgeschlagen. |
+| `reboots` | Die Uhr der Sensor-Platine ist zurückgesprungen, was normalerweise bedeutet, dass diese Platine neu gestartet ist. Die laufende Aufzeichnung wird beendet und in einer neuen Datei fortgesetzt. |
+
+Was tun bei den einzelnen Feldern:
+- **`ovf`**: Schauen Sie in derselben Zeile nach `maxloop`. Ist der Wert hoch, blockiert etwas die
+  Hauptschleife. Ein einzelner Zähler kurz nach dem Einschalten, der danach nicht mehr steigt, ist
+  harmlos.
+- **`crc`**: Siehe den Absatz zu `crc` im Abschnitt [Setup](#setup) weiter oben – eine langsamere
+  Verbindung (19200 Baud) lässt mehr zeitlichen Spielraum. Prüfen Sie außerdem, ob die Kabel
+  zwischen den beiden Platinen kurz sind und nicht zusammen mit der SD-Karten-Verkabelung verlegt
+  wurden.
+- **`frm`**: Steigt meist zusammen mit `ovf` oder `crc` und braucht dann keine eigene Maßnahme.
+  Steigt er dagegen alleine, deutet das auf einen Neustart der Sensor-Platine hin.
+- **`qfull`**: Wie bei `ovf` – schauen Sie nach `maxloop`.
+- **`sdfail`**: Die LED zeigt in diesem Fall zusätzlich das doppelte Blinken. Prüfen Sie, ob die
+  SD-Karte voll, richtig eingesteckt und nicht defekt ist. Solange dieser Fehler auftritt, werden
+  keine Messwerte gespeichert.
+- **`maxloop`**: Keine Maßnahme nötig, solange der Wert nicht in die Nähe von 370 kommt – darüber
+  hinaus kann der Empfangspuffer die Lücke nicht mehr überbrücken und `ovf` beginnt zu zählen.
+- **`heap`**: Keine Maßnahme nötig, solange der Wert deutlich über etwa 8000 bleibt. Darunter kann
+  die Weboberfläche instabil werden, besonders wenn mehrere Browser gleichzeitig verbunden sind.
+- **`ntpfail`**: Nur relevant, wenn Sie absolute Zeitstempel möchten. Der Sensor misst trotzdem
+  weiter und speichert Zeiten relativ zum Beginn der Aufzeichnung; die LED blinkt in diesem Fall
+  schnell, um anzuzeigen, dass keine Uhrzeit vorliegt.
+- **`reboots`**: Prüfen Sie Stromversorgung und Verkabelung der Sensor-Platine. Ein Vorkommen etwa
+  alle 50 Tage ist zu erwarten und harmlos – dann läuft die interne Uhr des Sensors über, was von
+  außen genauso aussieht.
+
 ## Messdateien und CSV-Export
 Diese Angaben sind nur relevant, wenn Sie die Messdaten direkt (ohne die Weboberfläche) auswerten
 möchten, z.B. mit einem eigenen Auswerteskript.
