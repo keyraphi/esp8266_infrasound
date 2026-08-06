@@ -25,6 +25,7 @@
 #include "logger.h"
 #include "measurement_file.h"
 #include "static_sync.h"
+#include "wifi_credentials.h"
 
 #define SPI_SPEED SD_SCK_MHZ(4)
 #define MYPORT_TX 5
@@ -42,6 +43,16 @@ AsyncEventSource events("/measurement_events");
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 const char *wifi_acces_file_path = "wifi_ssid_pw.txt";
+
+// Networks parsed from wifi_acces_file_path, in priority order. Populated by
+// load_wifi_credentials(), walked by initWifi().
+infrasound::WifiCredential g_wifi_credentials[infrasound::WIFI_MAX_NETWORKS];
+size_t g_wifi_credential_count = 0;
+
+// Read buffer for the whole credentials file. Static (not on-stack) because
+// the ESP8266 has very little spare stack.
+constexpr size_t kWifiFileBufferSize = 2048;
+static char g_wifi_file_buffer[kWifiFileBufferSize];
 
 // SSD Chip Select pin
 const int sd_chip_select = SS;
@@ -155,44 +166,89 @@ bool initSdCard() {
   return true;
 }
 
+// Reads wifi_acces_file_path in full and parses it into g_wifi_credentials.
+// Returns true when at least one credential was parsed. Does not attempt any
+// connection — see initWifi() for that.
 bool load_wifi_credentials() {
   cout << "Loading WiFi credentials from SDCard" << endl;
+  g_wifi_credential_count = 0;
+
   FsFile wifi_credential_file;
   if (!wifi_credential_file.open(wifi_acces_file_path, O_RDONLY)) {
-    cout << "WiFi credential file does not exist: " << wifi_credential_file
+    cout << "WiFi credential file does not exist: " << wifi_acces_file_path
          << endl;
     return false;
   }
-  cout << "Loading WiFi credentials" << endl;
-  char buffer;
-  // read ssid
-  ssid = "";
-  while (wifi_credential_file.read(&buffer, 1) >= 1) {
-    if (buffer == '\n') {
-      break;
-    }
-    ssid += buffer;
-  }
-  // read password
-  password = "";
-  while (wifi_credential_file.read(&buffer, 1) >= 1) {
-    if (buffer == '\n') {
-      break;
-    }
-    password += buffer;
-  }
-  wifi_credential_file.close();
-  cout << "Loaded WiFi credentials for ssid: " << ssid << endl;
-  return true;
-}
 
-bool write_wifi_credentials() {
-  cout << "Writing WiFi credentials for ssid:" << ssid << endl;
-  FsFile wifi_credential_file;
-  if (!wifi_credential_file.open(wifi_acces_file_path, O_WRONLY | O_CREAT)) {
+  const int n = wifi_credential_file.read(g_wifi_file_buffer,
+                                           sizeof(g_wifi_file_buffer) - 1);
+  wifi_credential_file.close();
+  if (n < 0) {
+    cout << "Failed to read WiFi credential file" << endl;
     return false;
   }
-  wifi_credential_file.print(ssid + "\n" + password + "\n");
+  g_wifi_file_buffer[n] = '\0';
+
+  infrasound::WifiParseReport report;
+  g_wifi_credential_count = infrasound::wifiParseCredentials(
+      g_wifi_file_buffer, g_wifi_credentials, infrasound::WIFI_MAX_NETWORKS,
+      &report);
+
+  if (report.legacy) {
+    cout << "WiFi credential file is in the legacy single-network format"
+         << endl;
+  }
+  cout << "Parsed " << g_wifi_credential_count
+       << " WiFi credential(s) from " << wifi_acces_file_path << endl;
+  if (report.malformed > 0) {
+    cout << "WARNING: " << report.malformed
+         << " malformed line(s) in WiFi credential file (no space "
+            "separator) were skipped"
+         << endl;
+  }
+  if (report.over_capacity > 0) {
+    cout << "WARNING: " << report.over_capacity
+         << " WiFi credential(s) dropped, more than "
+         << infrasound::WIFI_MAX_NETWORKS << " configured" << endl;
+  }
+
+  return g_wifi_credential_count > 0;
+}
+
+// Appends one "SSID password\n" line for the currently-typed-in ssid/password
+// globals. Appends rather than overwrites so adding a network on site does
+// not discard the ones that already work elsewhere.
+bool write_wifi_credentials() {
+  cout << "Appending WiFi credentials for ssid: " << ssid << endl;
+
+  // Check whether the file already ends in a newline; appending directly to
+  // a file that doesn't would join our new line onto the previous one.
+  bool needs_leading_newline = false;
+  {
+    FsFile existing;
+    if (existing.open(wifi_acces_file_path, O_RDONLY)) {
+      char probe[64];
+      int read_count;
+      bool have_content = false;
+      char last_byte = '\n';
+      while ((read_count = existing.read(probe, sizeof(probe))) > 0) {
+        have_content = true;
+        last_byte = probe[read_count - 1];
+      }
+      existing.close();
+      needs_leading_newline = have_content && last_byte != '\n';
+    }
+  }
+
+  FsFile wifi_credential_file;
+  if (!wifi_credential_file.open(wifi_acces_file_path,
+                                  O_WRONLY | O_CREAT | O_APPEND | O_AT_END)) {
+    return false;
+  }
+  if (needs_leading_newline) {
+    wifi_credential_file.print("\n");
+  }
+  wifi_credential_file.print(ssid + " " + password + "\n");
   wifi_credential_file.close();
   return true;
 }
@@ -643,19 +699,72 @@ void initWebserver() {
   server.begin();
 }
 
+// Connects to the first configured network that is both reachable (seen in a
+// scan) and actually accepts the stored password. Credentials are tried in
+// file order (== priority order). A single scan is used to decide which
+// configured SSIDs are even worth a WiFi.begin() attempt, because
+// waitForConnectResult()'s default timeout is 60 s per attempt and a list of
+// networks makes that add up fast.
 bool initWifi() {
-  // Try loading wifi credentials
-  bool successfully_read_wifi_credentials = load_wifi_credentials();
-  if (successfully_read_wifi_credentials) {
-    // establish connection
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-  }
-  if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    cout << "Failed to connect to: " << ssid << endl;
+  if (!load_wifi_credentials()) {
+    cout << "No usable WiFi credentials found; skipping WiFi" << endl;
     is_wifi_client = false;
     return false;
   }
+
+  WiFi.mode(WIFI_STA);
+  const int16_t scan_result = WiFi.scanNetworks();
+  const int16_t networks_found = scan_result > 0 ? scan_result : 0;
+  cout << "WiFi scan found " << networks_found << " network(s) in range"
+       << endl;
+
+  // Decide up front which configured networks are even in range, so a
+  // failure to connect to any of them can be reported clearly.
+  bool present[infrasound::WIFI_MAX_NETWORKS] = {};
+  size_t present_count = 0;
+  for (size_t i = 0; i < g_wifi_credential_count; ++i) {
+    for (int16_t j = 0; j < networks_found; ++j) {
+      if (WiFi.SSID(j) == g_wifi_credentials[i].ssid) {
+        present[i] = true;
+        ++present_count;
+        break;
+      }
+    }
+  }
+  cout << present_count << " of " << g_wifi_credential_count
+       << " configured network(s) are in range" << endl;
+
+  bool connected = false;
+  if (present_count == 0) {
+    cout << "None of the configured SSIDs were seen in the scan; not "
+            "attempting to connect"
+         << endl;
+  } else {
+    for (size_t i = 0; i < g_wifi_credential_count && !connected; ++i) {
+      if (!present[i]) continue;
+      const infrasound::WifiCredential &cred = g_wifi_credentials[i];
+      cout << "Attempting to connect to: " << cred.ssid << endl;
+      WiFi.begin(cred.ssid, cred.password);
+      if (WiFi.waitForConnectResult(15000) == WL_CONNECTED) {
+        cout << "Connected to: " << cred.ssid << endl;
+        ssid = cred.ssid;
+        password = cred.password;
+        connected = true;
+      } else {
+        cout << "Failed to connect to: " << cred.ssid << endl;
+      }
+    }
+  }
+
+  // Free the scan results on every path, not just success.
+  WiFi.scanDelete();
+
+  if (!connected) {
+    cout << "Failed to connect to any configured WiFi network" << endl;
+    is_wifi_client = false;
+    return false;
+  }
+
   cout << "IP Address: " << WiFi.localIP().toString() << endl;
   is_wifi_client = true;
   return true;
@@ -785,6 +894,12 @@ void setup() {
     unsigned long start_millis = millis();
     while (millis() - start_millis < 10 * 1000) {
       ssid = Serial.readStringUntil('\n');
+      // readStringUntil('\n') keeps everything before the newline, including
+      // the '\r' a Windows serial monitor sends for Enter. Without trim(),
+      // that '\r' becomes part of the SSID and both the connection attempt
+      // and the saved credential silently fail. A whitespace-only line must
+      // become empty too, so this happens before the isEmpty() check.
+      ssid.trim();
       if (!ssid.isEmpty()) {
         is_ssid_input_required = false;
         is_password_input_required = true;
@@ -796,6 +911,8 @@ void setup() {
            << ".\nYou have 1 minute";
       while (millis() - start_millis < 60 * 1000) {
         password = Serial.readStringUntil('\n');
+        // Same '\r'-from-Enter problem as the SSID above.
+        password.trim();
         if (!password.isEmpty()) {
           is_ssid_input_required = false;
           is_password_input_required = false;
@@ -803,6 +920,18 @@ void setup() {
         }
       }
       if (!is_password_input_required) {
+        // The credentials file splits each line at the LAST space, so a
+        // password containing a space cannot round-trip: it would be split
+        // between the "SSID" and the password on the next boot, silently
+        // wrong. Refuse to save it rather than write a file that won't
+        // parse back the way the user typed it.
+        if (password.indexOf(' ') != -1) {
+          cout << "Password contains a space, which this file format "
+                  "cannot store (lines split on the last space). Not "
+                  "saving. Restarting so you can try again."
+               << endl;
+          ESP.restart();
+        }
         cout << "Got the password. Trying to connect to the given WiFi."
              << endl;
         if (write_wifi_credentials() && initWifi()) {

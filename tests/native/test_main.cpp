@@ -5,6 +5,7 @@
 #include "led_status.h"
 #include "diagnostics.h"
 #include "static_manifest.h"
+#include "wifi_credentials.h"
 
 static void test_harness_works() {
   CHECK(1 + 1 == 2);
@@ -558,6 +559,160 @@ static void test_path_fits() {
   CHECK(!infrasound::smPathFits(path48));
 }
 
+static void test_wifi_parses_normal_multiline_file_in_order() {
+  const char* text =
+      "NetworkA passwordA\nNetworkB passwordB\nNetworkC passwordC\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, 3u);
+  CHECK_EQ(report.parsed, 3u);
+  CHECK_EQ(report.malformed, 0u);
+  CHECK_EQ(report.over_capacity, 0u);
+  CHECK(!report.legacy);
+  CHECK_STR_EQ(out[0].ssid, "NetworkA");
+  CHECK_STR_EQ(out[0].password, "passwordA");
+  CHECK_STR_EQ(out[1].ssid, "NetworkB");
+  CHECK_STR_EQ(out[1].password, "passwordB");
+  CHECK_STR_EQ(out[2].ssid, "NetworkC");
+  CHECK_STR_EQ(out[2].password, "passwordC");
+}
+
+static void test_wifi_ssid_can_contain_spaces() {
+  const char* text = "My Home Network hunter2\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, 1u);
+  CHECK_STR_EQ(out[0].ssid, "My Home Network");
+  CHECK_STR_EQ(out[0].password, "hunter2");
+}
+
+static void test_wifi_parses_crlf_line_endings() {
+  const char* text =
+      "NetworkA passwordA\r\nNetworkB passwordB\r\nNetworkC passwordC\r\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, 3u);
+  CHECK_STR_EQ(out[0].ssid, "NetworkA");
+  CHECK_STR_EQ(out[0].password, "passwordA");
+  CHECK_STR_EQ(out[1].ssid, "NetworkB");
+  CHECK_STR_EQ(out[1].password, "passwordB");
+  CHECK_STR_EQ(out[2].ssid, "NetworkC");
+  CHECK_STR_EQ(out[2].password, "passwordC");
+  // If '\r' leaked into the password (the single most likely real-world
+  // failure), its length would be one longer than expected even though
+  // CHECK_STR_EQ above might still pass on some libc strcmp behaviors.
+  CHECK_EQ(std::strlen(out[0].password), 9u);
+}
+
+static void test_wifi_skips_blank_lines_and_trailing_newline() {
+  const char* text = "\nNetworkA passwordA\n\n\nNetworkB passwordB\n\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, 2u);
+  CHECK_EQ(report.malformed, 0u);
+  CHECK_STR_EQ(out[0].ssid, "NetworkA");
+  CHECK_STR_EQ(out[1].ssid, "NetworkB");
+}
+
+static void test_wifi_malformed_line_is_skipped_and_counted() {
+  const char* text = "NetworkA passwordA\nNoSpaceHere\nNetworkC passwordC\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, 2u);
+  CHECK_EQ(report.malformed, 1u);
+  CHECK_STR_EQ(out[0].ssid, "NetworkA");
+  CHECK_STR_EQ(out[1].ssid, "NetworkC");
+}
+
+static void test_wifi_legacy_two_line_file_is_detected() {
+  const char* text = "MySSID\nMyPassword\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, 1u);
+  CHECK(report.legacy);
+  CHECK_STR_EQ(out[0].ssid, "MySSID");
+  CHECK_STR_EQ(out[0].password, "MyPassword");
+}
+
+static void test_wifi_two_line_new_format_is_not_legacy() {
+  const char* text = "NetworkA passwordA\nNetworkB passwordB\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, 2u);
+  CHECK(!report.legacy);
+  CHECK_STR_EQ(out[0].ssid, "NetworkA");
+  CHECK_STR_EQ(out[1].ssid, "NetworkB");
+}
+
+static void test_wifi_two_line_file_only_first_has_space_is_not_legacy() {
+  const char* text = "NetworkA passwordA\nNoSpaceHere\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK(!report.legacy);
+  CHECK_EQ(n, 1u);
+  CHECK_EQ(report.malformed, 1u);
+  CHECK_STR_EQ(out[0].ssid, "NetworkA");
+}
+
+static void test_wifi_more_than_max_networks_are_counted_over_capacity() {
+  const char* text =
+      "Net0 pw0\nNet1 pw1\nNet2 pw2\nNet3 pw3\nNet4 pw4\nNet5 pw5\n"
+      "Net6 pw6\nNet7 pw7\nNet8 pw8\nNet9 pw9\n";
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      text, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, infrasound::WIFI_MAX_NETWORKS);
+  CHECK_EQ(report.parsed, infrasound::WIFI_MAX_NETWORKS);
+  CHECK_EQ(report.over_capacity, 2u);
+  CHECK_STR_EQ(out[0].ssid, "Net0");
+  CHECK_STR_EQ(out[7].ssid, "Net7");
+}
+
+static void test_wifi_over_long_ssid_and_password_are_truncated() {
+  // 40 'S' chars is over WIFI_MAX_SSID_LEN's capacity of 32 + NUL; 70 'P'
+  // chars is over WIFI_MAX_PASS_LEN's capacity of 63 + NUL.
+  char long_ssid[41];
+  std::memset(long_ssid, 'S', 40);
+  long_ssid[40] = '\0';
+  char long_password[71];
+  std::memset(long_password, 'P', 70);
+  long_password[70] = '\0';
+
+  char line[41 + 1 + 70 + 2];
+  std::snprintf(line, sizeof(line), "%s %s\n", long_ssid, long_password);
+
+  infrasound::WifiCredential out[infrasound::WIFI_MAX_NETWORKS];
+  infrasound::WifiParseReport report;
+  size_t n = infrasound::wifiParseCredentials(
+      line, out, infrasound::WIFI_MAX_NETWORKS, &report);
+  CHECK_EQ(n, 1u);
+  CHECK_EQ(report.parsed, 1u);
+  CHECK_EQ(std::strlen(out[0].ssid), infrasound::WIFI_MAX_SSID_LEN - 1);
+  CHECK_EQ(std::strlen(out[0].password), infrasound::WIFI_MAX_PASS_LEN - 1);
+  // Every retained character must actually be the source character - a
+  // truncation bug that copies from the wrong offset would still pass a
+  // pure length check.
+  CHECK_EQ(out[0].ssid[0], 'S');
+  CHECK_EQ(out[0].password[0], 'P');
+}
+
 int main() {
   test_harness_works();
   test_crc8_matches_sdp600_algorithm();
@@ -598,6 +753,17 @@ int main() {
   test_crc32_is_streamable_and_matches_known_vector();
   test_manifest_entry_raw_byte_layout();
   test_path_fits();
+
+  test_wifi_parses_normal_multiline_file_in_order();
+  test_wifi_ssid_can_contain_spaces();
+  test_wifi_parses_crlf_line_endings();
+  test_wifi_skips_blank_lines_and_trailing_newline();
+  test_wifi_malformed_line_is_skipped_and_counted();
+  test_wifi_legacy_two_line_file_is_detected();
+  test_wifi_two_line_new_format_is_not_legacy();
+  test_wifi_two_line_file_only_first_has_space_is_not_legacy();
+  test_wifi_more_than_max_networks_are_counted_over_capacity();
+  test_wifi_over_long_ssid_and_password_are_truncated();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
