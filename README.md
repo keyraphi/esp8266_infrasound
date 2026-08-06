@@ -69,7 +69,32 @@ werden:
     - ESPAsyncWebserver (ACHTUNG: von lacamera, getestet mit version 3.1.0)
     - TimerInterrupt
 
+**Achtung:** Die beiden Platinen sprechen über eine Kabelverbindung miteinander, und das Format
+dieser Verbindung hat sich geändert (Geschwindigkeit und Aufbau der Datenpakete). Eine Platine mit
+alter Software kann deshalb nicht mehr mit einer Platine mit neuer Software kommunizieren. Wenn Sie
+den Sensor auf eine neue Version aktualisieren, müssen **immer beide Platinen** neu programmiert
+werden – nicht nur eine.
+
+Konkret läuft diese Verbindung jetzt mit **38400 Baud** statt vorher 9600 Baud. Diese
+Geschwindigkeit ist bewusst gewählt und nicht beliebig: Schneller sollte es nicht sein, weil die
+Webserver-Platine, die die Daten empfängt, gleichzeitig WLAN und den Webserver betreibt. Die
+verwendete Bibliothek für die serielle Verbindung (`EspSoftwareSerial`) nennt 115200 Baud als
+Obergrenze und warnt, dass es dabei bei viel gleichzeitigem Datenverkehr gelegentlich zu
+Bitfehlern kommen kann, weil das Timing von Interrupts auf einem ESP nie ganz exakt ist. Bei
+38400 Baud bleibt etwa dreimal so viel zeitlicher Spielraum wie an dieser Obergrenze. Langsamer
+sollte es aber auch nicht sein: Bei den früheren 9600 Baud war die Sensor-Platine in jedem
+Messintervall von 20 ms rund 10,4 ms lang allein mit dem Versenden der Daten beschäftigt; bei
+38400 Baud sind es nur noch etwa 2,9 ms, was Zeit für die eigentliche Sensor-Messung und ein
+etwas größeres Datenpaket lässt. Wichtig dabei: Die höhere Geschwindigkeit macht die Verbindung
+für sich genommen nicht robuster gegen Aussetzer – der Empfangspuffer der Webserver-Platine fasst
+eine bestimmte Anzahl an Datenpaketen, und Pakete kommen unabhängig von der
+Übertragungsgeschwindigkeit mit 50 pro Sekunde an. Robuster gegen Aussetzer wurde die Verbindung
+durch größere Puffer, nicht durch die höhere Geschwindigkeit.
+
 ### Sensor
+**Aktualisieren Sie nur den Sensor?** Lesen Sie zuerst den Achtung-Hinweis weiter oben im Abschnitt
+„Setup" – in der Regel müssen dabei **beide** Platinen neu programmiert werden, nicht nur diese.
+
 Bevor die D1 Mini Platine programmiert werden kann muss ein Arduino Projekt
 angelegt werden. In Arduino-Slang spricht man von einem "Sketch". Alle Arduino
 sketches leben in einem festgelegten Order:
@@ -94,6 +119,9 @@ SelectBoard->Ports).
 Fertig.
 
 ### Webserver
+**Aktualisieren Sie nur den Webserver?** Auch hier gilt der Achtung-Hinweis weiter oben im
+Abschnitt „Setup" – in der Regel müssen **beide** Platinen neu programmiert werden, nicht nur diese.
+
 Beim Webserver funktioniert es genau gleich.
 Kopieren Sie erst den `esp8266_infrasound_webserver` Order in ihren Sketch Order und benennen Sie ggf. `esp8266_infrasound_webserver.ino.cpp` zu `esp8266_infrasound_webserver.ino` um.
 
@@ -101,6 +129,11 @@ Programmieren Sie den zweiten D1 Mini:
 - `esp8266_infrasound_webserver.ino` Sketch in der Arduino IDE öffnen.
 - USB kabel mit dem Board verbinden.
 - _Generic ESP8266 Module_ also Board auswählen und Port setzen
+- Wählen Sie unter Tools → Flash Size eine Aufteilung mit mindestens 2 MB Dateisystem (auf dem D1
+  Mini Pro z. B. „16MB (FS:4MB OTA:~1019KB)"). Das Dateisystem nimmt die Webseiten-Dateien auf, die
+  weiter unten unter [Statische Dateien](#statische-dateien) beschrieben sind. **Achtung:** Wird
+  diese Aufteilung später geändert, wird das Dateisystem gelöscht und muss neu befüllt werden (dazu
+  reicht ein Neustart mit SD-Karte, siehe unten).
 - Board programmieren durch den Upload button.
 
 Fertig.
@@ -114,6 +147,20 @@ Dieses Web-Programm befindet sich im Order `static`. Dieser Order muss vollstän
 
 Fertig
 
+Beim Start kopiert der Webserver diese Dateien automatisch von der SD-Karte in seinen eigenen
+internen Speicher (denselben, in dem auch das Programm selbst liegt – siehe den Schritt zur
+Flash-Aufteilung weiter oben). Das passiert bei jedem Neustart, aber es werden nur Dateien kopiert,
+die sich seit dem letzten Mal geändert haben; ein normaler Neustart ohne Änderungen ist deshalb
+sehr schnell. Sobald die Dateien einmal erfolgreich kopiert wurden, funktioniert die Webseite auch
+dann noch, wenn die SD-Karte danach entfernt wird oder gerade nicht lesbar ist. Die SD-Karte bleibt
+trotzdem wichtig: Dort werden die Messwerte gespeichert, und wenn Sie eine Datei in `static`
+ändern, kopieren Sie sie wie gewohnt auf die Karte in den `www` Order – beim nächsten Neustart wird
+die Änderung automatisch übernommen.
+
+Optional: Wenn Sie neben einer Datei in `static` zusätzlich eine vorkomprimierte Version mit der
+Endung `.gz` ablegen (z. B. `app.js.gz` neben `app.js`), liefert der Webserver automatisch die
+komprimierte Version aus, sofern vorhanden. Das ist nicht notwendig und rein optional.
+
 ## Sensor betreiben
 Der Sensor hat drei Betriebsmodi:
 1. Messmodus: Für Langzeitmessungen draußen.
@@ -122,13 +169,12 @@ Der Sensor hat drei Betriebsmodi:
 
 ### 1. Messmodus
 Sobald der Sensor mit strom versorgt ist (die Webserver Platine per USB-Kabel Strom bekommt) beginnt der Sensor nach 10 sekunden mit einer Messung.
-Die Messwerte werden binär also 32-Bit float in eine Datei geschrieben.
-Diese Datei wird in den Order `messurements/` geschrieben.
-Wenn der Sensor Internet hat ist der Name der Datei der Zeitpunkt der Aktivierung im format `YYYY-MM-DD hh:mm:ss-ms`.
-Ohne Internet wird die Datei `unbekannt` benannt.
-Falls eine datei bereits existiert wird eine aufsteigende Zahl angehängt. Z.B.
-wenn `messurements/unbekannt` bereits existiert wird die Datei
-`messurements/unbekannt_0` genannt.
+Die Messwerte werden binär fortlaufend in eine Datei im Order `measurements/` geschrieben.
+Wenn der Sensor Internet hat, enthält der Name der Datei den Zeitpunkt der Aktivierung; ohne
+Internet heißt die Datei `unbekannt`. Alle 24 Stunden beginnt automatisch eine neue Datei, damit
+keine einzelne Datei zu groß wird; dabei wird nie eine bestehende Datei überschrieben. Details zum
+genauen Dateiformat, zur Dateibenennung und zum CSV-Export finden Sie im Abschnitt „Messdateien und
+CSV-Export" weiter unten.
 
 Der Messmodus läuft solange bis der Sensor ausgesteckt wird oder ein neues WLAN eingestellt wird oder in den Analysemodus gewechselt wird.
 
@@ -178,11 +224,77 @@ Schalldruckpegel unterhalb von 85 dB(G) wahrnehmen konnten. Für details der Sta
 Vom Live-View-Modus kann in den Analysemodus gewechselt werden indem im Menü zu Analyse gewechselt wird.
 Dadurch wird die aktuelle Messreihe auf dem Sensor **gestoppt**, damit er die gespeicherten Daten in der vollen Geschwindigkeit zur Verfügung stellen kann ohne immer wieder neue Messungen aufzeichnen zu müssen.
 Hier wird eine Liste aller Messdateien dargestellt, die auf dem Sensor gespeichert sind.
-Jede Messung kann entweder heruntergeladen werden (als .raw Datei) oder direkt im Browser analysiert werden.
+Jede Messung kann entweder als CSV-Datei heruntergeladen werden (z.B. zur Weiterverarbeitung in Excel oder Python) oder direkt im Browser analysiert werden.
 Für die Analyse stehen zwei Darstellungen bereit.
 1. Der G-Bewerteter Dauerschallpegel über die Zeit dargestellt. Hier lässt sich
    untersuchen wie die Lautstärke des Signals sich während der Messung entwickelt hat. In dem selben Diagramm sind 95 dB(G) als Menschliche Wahrnehmungsschwelle fest eingezeichnet. 
 2. Das Spektrogram der gesamten Messung. Je länger die Messung ging, desto komprimierter wird es dargestellt. Hier die Lautstärke der einzelnen Frequenzen über den Verlauf der Messung farblich kodiert dargestellt. Die Auflösung der Frequenzen kann mit einem Regler ausgewählt werden.
+
+## Status-LED
+Die kleine LED direkt auf der Webserver-Platine zeigt den Betriebszustand des Sensors an, auch
+ohne dass ein Computer angeschlossen ist:
+
+| Muster | Bedeutung |
+|---|---|
+| dauerhaft an | Keine SD-Karte gefunden |
+| doppeltes Blinken | Läuft, schreibt aber nicht auf die SD-Karte |
+| schnelles Blinken | Läuft, keine Uhrzeit (kein WLAN/NTP) |
+| kurzes Blitzen alle 2 s | Läuft, Uhrzeit gesetzt |
+
+Das kurze Blitzen alle 2 Sekunden bedeutet nur „Gerät läuft und hat eine Uhrzeit", nicht zwingend
+„misst gerade". Wenn eine Messung im Analysemodus bewusst gestoppt wird, bleibt dieses Blitzen
+bestehen – das ist normal und kein Fehler. Das doppelte Blinken ist dagegen ausschließlich für
+echte Störungen reserviert (SD-Karte voll oder Schreibfehler) und bedeutet immer, dass etwas
+nicht in Ordnung ist.
+
+## Messdateien und CSV-Export
+Diese Angaben sind nur relevant, wenn Sie die Messdaten direkt (ohne die Weboberfläche) auswerten
+möchten, z.B. mit einem eigenen Auswerteskript.
+
+Jede Messdatei im Order `measurements/` beginnt mit einem 32 Byte großen Kopfbereich (u.a.
+Formatversion, Abtastrate und `epoch0_ms` – der absoluten Startzeit der Datei in Millisekunden
+seit dem 1.1.1970 (Unix-Zeit), oder 0, wenn beim Aufzeichnen keine Internet-Uhrzeit vorlag),
+gefolgt von einer fortlaufenden Reihe von 8-Byte-Datensätzen: 4 Byte Zeitstempel in Millisekunden
+relativ zu `epoch0_ms` (Ganzzahl) und 4 Byte Druck in Pascal (Fließkommazahl), jeweils
+little-endian. Um aus einem Datensatz den absoluten Zeitpunkt zu berechnen, muss `epoch0_ms` aus
+dem Kopfbereich zum Zeitstempel des Datensatzes addiert werden. Ältere Aufnahmen im alten Format
+(nur Fließkommazahlen ohne Kopfbereich) kann der Sensor weiterhin lesen und zum Download anbieten.
+
+Der Grund für diese Umstellung: Im alten Format standen nur die reinen Druckwerte hintereinander,
+ganz ohne Zeitangabe. Ging dabei eine Messung verloren, stand davon nichts in der Datei – sie
+wurde einfach etwas kürzer, und alle folgenden Werte rückten unbemerkt in der Zeit nach vorne. Weil
+jeder Datensatz jetzt seinen eigenen Zeitstempel trägt, wird eine solche Lücke stattdessen in den
+Messwerten und später auch in den Diagrammen sichtbar, statt die Zeitachse still zu verfälschen.
+Das ist auch der Grund, warum ein Datensatz jetzt 8 statt 4 Byte braucht. Außerdem tragen die
+Datenpakete auf der seriellen Verbindung zwischen den beiden Platinen (siehe „Setup" oben) jetzt
+eine Prüfsumme; ein auf dem Weg beschädigtes Paket wird dadurch verworfen, statt als scheinbar
+plausibler Messwert gespeichert zu werden.
+
+Damit keine einzelne Datei zu groß wird, beginnt automatisch alle 24 Stunden eine neue Datei. Bei
+50 Messungen pro Sekunde und 8 Byte pro Datensatz sind das etwa 34,6 MB pro Tag. Der Dateiname hat
+die Form `<Basisname>_r<NNNN>_p<NN>`: `r` ist eine Laufnummer, die bei jedem Einschalten
+hochgezählt wird und auch einen Stromausfall übersteht, damit nie eine bestehende Datei
+überschrieben wird; `p` zählt die Teile eines Tages durch (auch ein Neustart der Platine oder ein
+Wechsel in den Analysemodus beginnt einen neuen Teil).
+
+Beim Herunterladen als CSV-Datei (im Analysemodus) enthält die Datei zwei Spalten: `time_ms` und
+`pressure_pa`. Wenn der Sensor beim Aufzeichnen Internet hatte, ist `time_ms` die absolute Uhrzeit
+in Millisekunden seit dem 1.1.1970 (Unix-Zeit); ohne Internet sind es Millisekunden seit Beginn
+der Aufzeichnung.
+
+Dabei hat jede Zeile der CSV-Datei exakt dieselbe Anzahl Zeichen. Das ist kein Zufall, sondern
+notwendig: Der Sensor überträgt große Dateien in mehreren Teilen (siehe Hinweis zu großen Dateien
+unten), und nur weil jede Zeile gleich lang ist, kann er nach einem Teil genau dort weitermachen,
+wo der nächste beginnt. Aus demselben Grund lässt sich die Datei auch ab einer beliebigen Stelle
+lesen, ohne sie von vorne an durchsuchen zu müssen.
+
+Achtung bei großen Dateien: Eine volle Tagesaufzeichnung hat bei 50 Messungen pro Sekunde etwa 4,3
+Millionen Zeilen und damit mehr Zeilen, als Excel darstellen kann (Excel-Grenze: ca. 1.048.576
+Zeilen). Um eine Tagesaufzeichnung trotzdem in Excel zu öffnen, öffnen Sie die Datei auf der
+Analyse-Seite über den Button „Analyse" (nicht „Download"), wählen Sie dort mit den beiden Reglern
+unterhalb des Spektrogramms den gewünschten Zeitausschnitt aus und laden Sie nur diesen Ausschnitt
+über den Button „Ausgewählten bereich als CSV herunterladen" herunter, statt die ganze Datei auf
+einmal über den Download-Button in der Liste.
 
 ## Updates
 Es gibt noch viele Möglichkeiten die Fähigkeiten des Sensors auszubauen.
