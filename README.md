@@ -259,14 +259,23 @@ ohne dass ein Computer angeschlossen ist:
 |---|---|
 | dauerhaft an | Keine SD-Karte gefunden |
 | doppeltes Blinken | Läuft, schreibt aber nicht auf die SD-Karte |
+| dreifaches Blinken | Läuft, aber es kommen keine Daten vom Sensor |
 | schnelles Blinken | Läuft, keine Uhrzeit (kein WLAN/NTP) |
-| kurzes Blitzen alle 2 s | Läuft, Uhrzeit gesetzt |
+| langsames, gleichmäßiges Blinken (1 s an, 1 s aus) | Messung bewusst gestoppt (Analysemodus) |
+| kurzes Blitzen alle 2 s | Misst gerade, Uhrzeit gesetzt |
 
-Das kurze Blitzen alle 2 Sekunden bedeutet nur „Gerät läuft und hat eine Uhrzeit", nicht zwingend
-„misst gerade". Wenn eine Messung im Analysemodus bewusst gestoppt wird, bleibt dieses Blitzen
-bestehen – das ist normal und kein Fehler. Das doppelte Blinken ist dagegen ausschließlich für
-echte Störungen reserviert (SD-Karte voll oder Schreibfehler) und bedeutet immer, dass etwas
-nicht in Ordnung ist.
+Das dreifache Blinken zeigt an, dass zwar eine Messung laufen soll, aber seit über zwei Sekunden
+keine Daten vom Sensor-Board mehr angekommen sind. Das ist wichtig, weil ein abgestürztes oder
+abgeklemmtes Sensor-Board sonst unsichtbar bliebe: Die Messung gilt intern weiterhin als aktiv, und
+die Logdatei bleibt ohne Schreibfehler geöffnet, sodass ohne dieses Muster der normale Herzschlag
+weiterlaufen würde, obwohl nichts aufgezeichnet wird. Das langsame, gleichmäßige Blinken bedeutet
+dagegen, dass die Messung bewusst gestoppt wurde (Analysemodus) – das ist normal und kein Fehler.
+Das doppelte Blinken ist ausschließlich für echte Störungen reserviert (SD-Karte voll oder
+Schreibfehler) und bedeutet immer, dass etwas nicht in Ordnung ist.
+
+Das kurze Blitzen alle 2 Sekunden bedeutet „Gerät läuft, hat eine Uhrzeit und misst gerade" – anders
+als früher ist der Herzschlag jetzt kein bloßes Versprechen, dass auch aufgezeichnet wird: Fehlende
+Daten und ein bewusster Stopp haben inzwischen jeweils ihr eigenes, unterscheidbares Muster.
 
 ## Diagnose-Zeile (DIAG)
 Neben der Status-LED schreibt der Webserver einmal pro Minute eine zweite, genauere

@@ -103,6 +103,11 @@ IPAddress local_IP(192, 168, 4, 1);
 IPAddress gateway(192, 168, 4, 1);
 IPAddress subnet(255, 255, 255, 0);
 
+// A sensor that has stopped talking is otherwise invisible: the measurement
+// flag stays set and the log file stays open without errors, so the LED
+// would show the healthy heartbeat while nothing is recorded at all.
+constexpr uint32_t LED_NO_DATA_MS = 2000;
+
 void ledTick(uint32_t now_ms) {
   infrasound::LedState state;
   if (!is_sd_card_available) {
@@ -110,10 +115,22 @@ void ledTick(uint32_t now_ms) {
   } else if (is_measurement_running && !loggerIsLogging()) {
     // "We are supposed to be logging but are not" — a real failure. A
     // deliberate stop clears is_measurement_running too, so analysis mode
-    // keeps the heartbeat, per the contract in led_status.h.
+    // does not land here, per the contract in led_status.h.
     state = infrasound::LedState::NotLogging;
+  } else if (is_measurement_running &&
+             (now_ms - last_accepted_ms) > LED_NO_DATA_MS) {
+    // Gated on is_measurement_running for the same reason as NotLogging
+    // above: if the user stopped the measurement themselves, no data
+    // arriving is expected, and flagging it as a sensor fault would be a
+    // false alarm. This is the same trap the double-blink already fell into
+    // once and was fixed for; do not reintroduce it in a new form.
+    state = infrasound::LedState::NoData;
   } else if (start_timestamp == 0) {
     state = infrasound::LedState::NoTime;
+  } else if (!is_measurement_running) {
+    // NoTime outranks Stopped: a missing clock changes the data about to be
+    // recorded, whereas stopping is deliberate and the user already knows.
+    state = infrasound::LedState::Stopped;
   } else {
     state = infrasound::LedState::Ok;
   }

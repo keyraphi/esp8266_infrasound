@@ -375,6 +375,33 @@ static void test_not_logging_is_a_double_blink() {
   CHECK(infrasound::ledOn(infrasound::LedState::NotLogging, 2000));
 }
 
+static void test_no_data_is_a_triple_flash() {
+  // 2000 ms period: on 0-100, off 100-250, on 250-350, off 350-500,
+  // on 500-600, off 600-2000.
+  CHECK(infrasound::ledOn(infrasound::LedState::NoData, 0));
+  CHECK(infrasound::ledOn(infrasound::LedState::NoData, 99));
+  CHECK(!infrasound::ledOn(infrasound::LedState::NoData, 100));
+  CHECK(!infrasound::ledOn(infrasound::LedState::NoData, 249));
+  CHECK(infrasound::ledOn(infrasound::LedState::NoData, 250));
+  CHECK(infrasound::ledOn(infrasound::LedState::NoData, 349));
+  CHECK(!infrasound::ledOn(infrasound::LedState::NoData, 350));
+  CHECK(!infrasound::ledOn(infrasound::LedState::NoData, 499));
+  CHECK(infrasound::ledOn(infrasound::LedState::NoData, 500));
+  CHECK(infrasound::ledOn(infrasound::LedState::NoData, 599));
+  CHECK(!infrasound::ledOn(infrasound::LedState::NoData, 600));
+  CHECK(!infrasound::ledOn(infrasound::LedState::NoData, 1999));
+  CHECK(infrasound::ledOn(infrasound::LedState::NoData, 2000));
+}
+
+static void test_stopped_is_a_slow_even_blink() {
+  // 2000 ms period: on 0-1000, off 1000-2000.
+  CHECK(infrasound::ledOn(infrasound::LedState::Stopped, 0));
+  CHECK(infrasound::ledOn(infrasound::LedState::Stopped, 999));
+  CHECK(!infrasound::ledOn(infrasound::LedState::Stopped, 1000));
+  CHECK(!infrasound::ledOn(infrasound::LedState::Stopped, 1999));
+  CHECK(infrasound::ledOn(infrasound::LedState::Stopped, 2000));
+}
+
 static void test_patterns_are_distinguishable_by_duty_cycle() {
   // A human must be able to tell these apart at a glance, so assert the
   // number of on-samples over one 2000 ms window differs materially.
@@ -387,6 +414,40 @@ static void test_patterns_are_distinguishable_by_duty_cycle() {
   CHECK_EQ(not_logging, 200);
   CHECK_EQ(no_time, 1000);
   CHECK_EQ(ok, 50);
+}
+
+static void test_all_six_states_are_distinguishable() {
+  // Neither on-ms duty nor transition count alone separates all six states
+  // (NoTime and Stopped share duty; Stopped and Ok share transition count),
+  // so assert the (on_ms, transitions) pair is unique across all six.
+  const infrasound::LedState states[] = {
+      infrasound::LedState::SdFailure,  infrasound::LedState::NotLogging,
+      infrasound::LedState::NoData,     infrasound::LedState::NoTime,
+      infrasound::LedState::Stopped,    infrasound::LedState::Ok,
+  };
+  const int expected_on_ms[] = {2000, 200, 300, 1000, 1000, 50};
+  const int expected_transitions[] = {0, 4, 6, 20, 2, 2};
+  constexpr int n = 6;
+
+  int on_ms[n] = {};
+  int transitions[n] = {};
+  for (int i = 0; i < n; ++i) {
+    bool prev = infrasound::ledOn(states[i], 1999);  // wrap from t=1999
+    for (uint32_t t = 0; t < 2000; ++t) {
+      const bool cur = infrasound::ledOn(states[i], t);
+      if (cur) ++on_ms[i];
+      if (cur != prev) ++transitions[i];
+      prev = cur;
+    }
+    CHECK_EQ(on_ms[i], expected_on_ms[i]);
+    CHECK_EQ(transitions[i], expected_transitions[i]);
+  }
+
+  for (int i = 0; i < n; ++i) {
+    for (int j = i + 1; j < n; ++j) {
+      CHECK(on_ms[i] != on_ms[j] || transitions[i] != transitions[j]);
+    }
+  }
 }
 
 static void test_diagnostics_all_clear() {
@@ -743,7 +804,10 @@ int main() {
   test_no_time_blinks_at_five_hertz();
   test_ok_is_a_short_flash_every_two_seconds();
   test_not_logging_is_a_double_blink();
+  test_no_data_is_a_triple_flash();
+  test_stopped_is_a_slow_even_blink();
   test_patterns_are_distinguishable_by_duty_cycle();
+  test_all_six_states_are_distinguishable();
   test_diagnostics_all_clear();
   test_format_diagnostics_includes_every_counter();
   test_format_diagnostics_respects_a_small_buffer();
