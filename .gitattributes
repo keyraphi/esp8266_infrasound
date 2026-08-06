@@ -1,0 +1,7 @@
+# The frame protocol header is duplicated into each sketch folder because the
+# Arduino IDE copies a sketch to a temp build dir and cannot resolve includes
+# from outside it. tests/test_shared_sync.py compares the copies byte for byte,
+# so both must be stored and checked out with identical line endings regardless
+# of any contributor's core.autocrlf setting.
+esp8266_infrasound_webserver/infrasound_frame.h text eol=lf
+arduino_infrasound_sensor/infrasound_frame.h    text eol=lf
