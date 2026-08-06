@@ -316,35 +316,19 @@ function setupEventListener() {
   source.addEventListener(
     "measurement",
     function(e) {
-      // console.log("got measurement event", e.data);
-      message = e.data.split(";");
-      if (message.length != 2) {
-        console.log(
-          "ERROR: message length is expected to be 2, was:",
-          message.length,
-        );
+      const batch = InfrasoundParsing.parseSseBatch(e.data, ms_between_measurements);
+      if (batch.values.length === 0) {
+        console.log("ERROR: unparseable measurement message:", e.data);
         return;
       }
-      const index_string = message[0];
-      const meassurement_string = message[1];
-
-      const new_index = parseInt(index_string);
-      const new_measurement = parseFloat(meassurement_string);
-      measurement_buffer.push(new_measurement);
-      let new_timestamp;
-      if (times_buffer.length == 0) {
-        new_timestamp = start_timestamp + new_index * ms_between_measurements;
-      } else {
-        const start_idx = index_buffer[index_buffer.length - 1];
-        const time_since_start =
-          (new_index - start_idx) * ms_between_measurements;
-        new_timestamp =
-          times_buffer[times_buffer.length - 1] + time_since_start;
+      for (let i = 0; i < batch.values.length; i += 1) {
+        measurement_buffer.push(batch.values[i]);
+        // Timestamps now come from the sensor, so gaps are real rather than
+        // reconstructed from a sample index.
+        times_buffer.push(start_timestamp + batch.times[i]);
+        index_buffer.push(batch.times[i] / ms_between_measurements);
+        number_of_new_measurements += 1;
       }
-      times_buffer.push(new_timestamp);
-      index_buffer.push(new_index);
-      number_of_new_measurements += 1;
-
       if (number_of_new_measurements > spectrumUpdateInterval) {
         updateCharts();
         number_of_new_measurements = 0;
