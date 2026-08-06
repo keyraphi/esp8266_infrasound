@@ -43,7 +43,8 @@ void setup() {
   }
   delay(100);
 
-  esp_serial.begin(38400, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
+  esp_serial.begin(infrasound::LINK_BAUD, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX,
+                    false);
   sensor.begin();
 
   nan_reads = 0;

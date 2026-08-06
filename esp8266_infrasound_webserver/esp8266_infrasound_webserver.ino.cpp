@@ -950,19 +950,6 @@ void setup() {
     }
   }
 
-  // Connection to Arduino serial using software serial
-  cout << "Connecting to Sensor Board" << endl;
-  // 256-byte byte buffer and 2048-entry ISR edge buffer: ~8.25 KB of RAM for
-  // roughly 370 ms of stall tolerance, up from the ~128 ms the library
-  // defaults gave. Insurance on top of removing the stalls, not a substitute.
-  esp_serial.begin(38400, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false, 256, 2048);
-  if (!esp_serial) {
-    cout << "Invalid EspSoftwareSerial pin configuration, check config!";
-    // don't continue with broken configuration
-    wait_forever();
-  }
-  cout << "Connection to Sensor Board established" << endl;
-
   is_measurement_running = true;
 
   // init time
@@ -972,6 +959,29 @@ void setup() {
     // Setup Webserver
     initWebserver();
   }
+
+  // Connection to Arduino serial using software serial.
+  //
+  // Opened last, immediately before loop() starts draining it. initTimestamp()
+  // blocks for several seconds (up to three NTP attempts, 500 ms apart, plus
+  // timeClient.update()) and initWebserver() takes its own time; opening
+  // esp_serial before them left the receive buffer filling with nobody
+  // reading it. That overflow corrupted a frame, which the decoder then
+  // seeded its time reference from, desynchronising it for a full
+  // MAX_PLAUSIBLE_GAP_MS window -- exactly the "ovf=1 crc=N frm=50" pinned
+  // from startup seen in the field before armReseed() recovered it.
+  cout << "Connecting to Sensor Board" << endl;
+  // 256-byte byte buffer and 2048-entry ISR edge buffer: ~8.25 KB of RAM for
+  // roughly 370 ms of stall tolerance, up from the ~128 ms the library
+  // defaults gave. Insurance on top of removing the stalls, not a substitute.
+  esp_serial.begin(infrasound::LINK_BAUD, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX,
+                    false, 256, 2048);
+  if (!esp_serial) {
+    cout << "Invalid EspSoftwareSerial pin configuration, check config!";
+    // don't continue with broken configuration
+    wait_forever();
+  }
+  cout << "Connection to Sensor Board established" << endl;
 }
 
 namespace {

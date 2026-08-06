@@ -18,6 +18,17 @@ constexpr uint8_t  FRAME_START = 0xFF;
 constexpr uint8_t  FRAME_END   = 0x00;
 constexpr uint8_t  CRC8_POLY   = 0x31;
 
+// Baud rate of the link between the two boards. Both sketches use this, so
+// the two can never drift apart -- a mismatch means the boards silently
+// cannot talk to each other at all.
+//
+// 38400 is a deliberate compromise, documented with its reasoning in
+// README.md: fast enough that the sensor spends only ~2.9 ms of each 20 ms
+// interval transmitting, slow enough to keep roughly three times the timing
+// margin of EspSoftwareSerial's stated 115200 ceiling. If you lower this to
+// reduce bit errors (the crc counter in the DIAG line), update README.md too.
+constexpr uint32_t LINK_BAUD = 38400;
+
 // CRC-8, polynomial 0x31, init 0x00, MSB-first.
 // Same algorithm as SDP600::calcCRC (SDP600.cpp:47-58).
 inline uint8_t crc8(const uint8_t* data, size_t len) {

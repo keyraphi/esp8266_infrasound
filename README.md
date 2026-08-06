@@ -99,6 +99,19 @@ eine bestimmte Anzahl an Datenpaketen, und Pakete kommen unabhängig von der
 Übertragungsgeschwindigkeit mit 50 pro Sekunde an. Robuster gegen Aussetzer wurde die Verbindung
 durch größere Puffer, nicht durch die höhere Geschwindigkeit.
 
+**Die Geschwindigkeit ändern:** Der Wert steht an genau einer Stelle, in
+`esp8266_infrasound_webserver/infrasound_frame.h` als `LINK_BAUD`. Ändern Sie ihn dort, führen Sie
+danach `python tools/sync_shared.py` aus – das kopiert die Datei unverändert in den Sensor-Order,
+damit beide Platinen denselben Wert benutzen – und programmieren Sie anschließend **beide**
+Platinen neu. Stimmen die beiden Werte nicht überein, sprechen die Platinen gar nicht mehr
+miteinander; die Verbindung wird dann nicht etwa langsamer, sondern kommt überhaupt nicht zustande.
+
+Ob es auf der Verbindung Übertragungsfehler gibt, sehen Sie am Zähler `crc` in der `DIAG`-Zeile,
+die der Webserver einmal pro Minute auf die USB-Konsole schreibt. Er zählt Datenpakete, die wegen
+einer falschen Prüfsumme verworfen wurden – solche Pakete sind verlorene Messwerte. Steigt dieser
+Zähler im laufenden Betrieb spürbar an, kann eine langsamere Verbindung (z. B. 19200 Baud) helfen,
+weil dabei mehr zeitlicher Spielraum bleibt.
+
 ### Sensor
 **Aktualisieren Sie nur den Sensor?** Lesen Sie zuerst den Achtung-Hinweis weiter oben im Abschnitt
 „Setup" – in der Regel müssen dabei **beide** Platinen neu programmiert werden, nicht nur diese.
