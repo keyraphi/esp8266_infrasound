@@ -7,20 +7,34 @@
 #include <Arduino.h>
 
 #include "SDP600.h"
+#include "infrasound_frame.h"
 #include <SoftwareSerial.h>
 
 #define MYPORT_TX 14 // d5
 #define MYPORT_RX 12 // d6
+
+// Set to 0 to silence the USB debug console.
+#define SENSOR_DEBUG_PRINT 1
 
 EspSoftwareSerial::UART esp_serial;
 
 ESP8266Timer ITimer;
 
 SDP600 sensor;
-uint32_t measurement_counter;
 
-bool volatile poll_sensor;
-void TimerHandler() { poll_sensor = true; }
+// Written by the ISR, read by loop(). tick_ms is the intended sample instant,
+// captured in the interrupt rather than whenever loop() gets round to reading
+// the sensor. A missed tick therefore shows up as a 40 ms gap in the data
+// instead of silently compressing time.
+volatile uint32_t tick_ms;
+volatile bool poll_sensor;
+
+uint32_t nan_reads;
+
+void IRAM_ATTR TimerHandler() {
+  tick_ms = millis();
+  poll_sensor = true;
+}
 
 void setup() {
   Serial.begin(115200);
@@ -29,40 +43,52 @@ void setup() {
   }
   delay(100);
 
-  esp_serial.begin(9600, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX, false);
+  esp_serial.begin(infrasound::LINK_BAUD, SWSERIAL_8N1, MYPORT_RX, MYPORT_TX,
+                    false);
   sensor.begin();
 
-  measurement_counter = 0;
+  nan_reads = 0;
 
-  // Start timer
   if (!ITimer.attachInterrupt(TIMER_FREQUENCY_HZ, TimerHandler)) {
     Serial.println("Starting Timer failed!");
   }
 }
 
 void loop() {
-  if (poll_sensor) {
-    // load new measurement from sensor
-    float measurement = sensor.read();
-    poll_sensor = false;
+  // Snapshot the flag and its timestamp together, before the I2C read. The
+  // previous code cleared poll_sensor after sensor.read(), so a tick firing
+  // during the read was silently swallowed.
+  noInterrupts();
+  const bool due = poll_sensor;
+  const uint32_t t = tick_ms;
+  poll_sensor = false;
+  interrupts();
 
-    // create data package to send to web server esp
-    char data_package[10];
-    data_package[0] = '\xFF'; // package starts with a full one byte
-    data_package[9] = '\x00'; // package ends with a zero byte
-    float *measurement_ptr = reinterpret_cast<float *>(&(data_package[1]));
-    uint32_t *index_ptr = reinterpret_cast<uint32_t *>(&(data_package[5]));
-    *measurement_ptr = measurement;
-    *index_ptr = measurement_counter;
-
-    // send 10 bytes of data package via serial connection
-    esp_serial.write(reinterpret_cast<char *>(&data_package), 10);
-    // Serial.write(reinterpret_cast<char*>(&measurement), sizeof(measurement));
-    Serial.print(measurement_counter);
-    Serial.print(" ");
-    Serial.print(measurement);
-    Serial.println("");
-    // increase measurement counter
-    measurement_counter += 1;
+  if (!due) {
+    return;
   }
+
+  const float measurement = sensor.read();
+
+  // SDP600::read() returns NAN when the I2C CRC fails. A failed read is a
+  // missing sample: not transmitting it keeps the file free of non-finite
+  // values, and the gap is recorded honestly by the timestamps.
+  if (isnan(measurement)) {
+    ++nan_reads;
+#if SENSOR_DEBUG_PRINT
+    Serial.print("nan_reads ");
+    Serial.println(nan_reads);
+#endif
+    return;
+  }
+
+  uint8_t frame[infrasound::FRAME_SIZE];
+  infrasound::encodeFrame(measurement, t, frame);
+  esp_serial.write(frame, infrasound::FRAME_SIZE);
+
+#if SENSOR_DEBUG_PRINT
+  Serial.print(t);
+  Serial.print(" ");
+  Serial.println(measurement);
+#endif
 }

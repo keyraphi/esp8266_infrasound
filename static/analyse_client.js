@@ -11,6 +11,13 @@ const toSlider = document.querySelector('#toSlider');
 const fromInput = document.querySelector('#fromInput');
 const toInput = document.querySelector('#toInput');
 const analyseRangeButton = document.querySelector("#analyseRangeButton");
+const downloadRangeButton = document.querySelector("#downloadRangeButton");
+
+// Name of the file currently loaded for analysis, set when the Analyse
+// button is clicked in the file list. Needed to build the ranged CSV
+// download URL, since by the time the range sliders exist the list's own
+// download button (built once per file, no range) is out of scope.
+let currentAnalysisFileName = null;
 
 const chartSoundPressureOverTime = new Highcharts.Chart({
   chart: {
@@ -51,8 +58,12 @@ function showDownloadOptions(downloadOptions) {
     const buttonGroupDiv = document.createElement("div");
     const downloadButton = document.createElement("button");
     const analyseButton = document.createElement("button");
-    const fileName = downloadOptions["files"][i];
-    labelDiv.textContent = fileName;
+    const file = downloadOptions["files"][i];
+    const startTime = file.epoch0_ms
+      ? new Date(file.epoch0_ms).toLocaleString()
+      : "unknown start time";
+    const legacyTag = file.legacy ? ", legacy format" : "";
+    labelDiv.textContent = `${file.name} (${file.records} records, ${startTime}${legacyTag})`;
     downloadButton.classList.add("btn");
     analyseButton.classList.add("btn");
     downloadButton.classList.add("btn-secondary");
@@ -63,18 +74,20 @@ function showDownloadOptions(downloadOptions) {
     buttonGroupDiv.appendChild(downloadButton);
     buttonGroupDiv.appendChild(analyseButton);
     const listDiv = document.createElement("div");
-    const endpoint = "/download?&file=" + downloadOptions["files"][i];
+    const rawEndpoint = "/raw?file=" + encodeURIComponent(file.name);
+    const csvEndpoint = "/download?file=" + encodeURIComponent(file.name);
     downloadButton.textContent = "Download";
     downloadButton.addEventListener("click", (event) => {
       event.preventDefault();
-      console.log("Downloading", endpoint);
-      downloadFile(endpoint);
+      console.log("Downloading", csvEndpoint);
+      downloadFile(csvEndpoint);
     });
 
     analyseButton.addEventListener("click", (event) => {
       event.preventDefault();
-      console.log("Downloading", endpoint, "for analysis");
-      downloadAndAnalyse(endpoint);
+      console.log("Downloading", rawEndpoint, "for analysis");
+      currentAnalysisFileName = file.name;
+      downloadAndAnalyse(rawEndpoint);
     });
     analyseButton.textContent = "Analyse";
     listDiv.classList.add("list-group-item");
@@ -121,7 +134,13 @@ function downloadAndAnalyse(endpoint) {
   fetch(endpoint)
     .then(response =>
       processChunkedResponse(response))
-    .catch(error => console.error("Error:", error));
+    .catch(error => {
+      // A failure that only goes to console.error leaves the UI stuck on
+      // whatever label was last set (e.g. "Parsing Data") with no
+      // explanation. Reset the indicator and show the error text instead.
+      console.error("Error:", error);
+      setProgressbar(0, `Error: ${error.message}`);
+    });
 }
 
 async function processChunkedResponse(response) {
@@ -150,33 +169,47 @@ async function processChunkedResponse(response) {
   }
   // Parse measurements in downloaded data
   setProgressbar(0, "Parsing Data");
-  if (downloadedData.length < 8) {
-    console.error("File too small - doesnt contain a header");
+  if (downloadedData.length < InfrasoundParsing.MF_RECORD_SIZE) {
+    console.error("File too small - doesn't contain any records");
     setProgressbar(0, "No work pending");
     return;
   }
-  let offset = 0;
-  const header = String.fromCharCode.apply(null, downloadedData.slice(0, 4));
-  offset += 4;
-  if (header != "data") {
-    console.error("File header was", header, " - I only accept 'data'");
-    setProgressbar(0, "No work pending");
-    return;
+
+  const dv = new DataView(downloadedData.buffer, downloadedData.byteOffset,
+    downloadedData.byteLength);
+  const header = InfrasoundParsing.parseFileHeader(dv);
+  if (!header.legacy && downloadedData.length < InfrasoundParsing.MF_HEADER_SIZE) {
+    // Magic present but the header is incomplete -- a truncated file, not a
+    // legacy one. Fail visibly rather than letting parseFileHeader's next
+    // read throw a RangeError into the generic catch, which would leave the
+    // UI stuck with no explanation.
+    throw new Error("Measurement file is truncated: header incomplete");
   }
-  const bytesToRead = new Uint32Array(downloadedData.slice(offset, offset + 4))[0];
-  offset += 4;
-  if (bytesToRead % 4 != 0) {
-    console.error("The given file size is not a multiple of 4 - should be with float values!", bytesToRead);
-    setProgressbar(0, "No work pending");
-    return;
+
+  let parsed;
+  if (header.legacy) {
+    parsed = InfrasoundParsing.parseLegacyRecords(
+      dv, 0, Math.floor(dv.byteLength / 4));
+  } else {
+    const bodyBytes = dv.byteLength - InfrasoundParsing.MF_HEADER_SIZE;
+    parsed = InfrasoundParsing.parseRecords(
+      dv, InfrasoundParsing.MF_HEADER_SIZE,
+      Math.floor(bodyBytes / InfrasoundParsing.MF_RECORD_SIZE));
   }
-  const measurementData = new Float32Array(downloadedData.slice(8, downloadedData.length).buffer);
+
+  // Keep the name the downstream FFT/spectrogram code already expects.
+  const measurementData = Float32Array.from(parsed.values);
+  // Real per-sample timestamps (ms, relative to the file's epoch0), not an
+  // assumed index * 20ms grid -- this is what makes dropped samples visible
+  // as a gap instead of silently compressing time.
+  const measurementTimes = parsed.times;
+  const samplePeriodMs = 1000 / header.rateHz;
   setProgressbar(100, "Parsing Data");
 
   console.log("Download finished... starting analysis");
   setProgressbar(0, "No work pending");
   // Create measurement Analyser
-  measurementAnalyser = new MeasurementAnalyser(measurementData);
+  measurementAnalyser = new MeasurementAnalyser(measurementData, measurementTimes, samplePeriodMs);
 
 }
 
@@ -190,22 +223,44 @@ function setProgressbar(value, label) {
 }
 
 class MeasurementAnalyser {
-  constructor(time_sequence) {
+  constructor(time_sequence, sample_times, sample_period_ms) {
     this.sequence = time_sequence;
-
+    // Real per-sample timestamps (ms, relative to the file's epoch0) parsed
+    // from the record stream -- used for the time axis instead of an
+    // assumed index * 20ms grid, so a dropped sample shows up as a gap.
+    this.times = sample_times;
+    this.samplePeriodMs = sample_period_ms;
+    // 1.5 sample periods, matching SSE_GAP_MS on the server. The sensor
+    // stamps samples with millis() in the timer ISR, so a healthy 20 ms
+    // period quantises to 19-21 ms; a genuinely dropped sample gives 40 ms.
+    // A zero-tolerance threshold would punch false holes in the chart and
+    // claim data loss that did not occur.
+    this.gapThresholdMs = this.samplePeriodMs * 1.5;
 
     this.startIdx = 0;
     this.endIdx = time_sequence.length - 1;
-    this.spectrogram = new Spectrogram(1024, time_sequence.length * 20 / 1000);
+    this.spectrogram = new Spectrogram(1024, this.durationBetween(this.startIdx, this.endIdx));
     this.setFFTWindowSize(1024);
-    // TODO make sure the number is correct
-    this.durationSeconds = linspace(0, time_sequence.length * 20 / 1000, this.spectrogram.width);
-    this.totalSoundPressureLevels = new Float32Array(this.durationSeconds.length);
+    // Filled in progressively by setSoundpressure() as each window is
+    // analysed; null until then so unanalysed positions render as a gap
+    // rather than a misleading slope to 0.
+    this.durationSeconds = new Array(this.spectrogram.width).fill(0);
+    this.totalSoundPressureLevels = new Array(this.spectrogram.width).fill(null);
     this.previewSelectedRange = this.previewSelectedRange.bind(this);
     this.onAnalyseSelectedRange = this.onAnalyseSelectedRange.bind(this);
+    this.onDownloadSelectedRange = this.onDownloadSelectedRange.bind(this);
     this.initAnalysisRangeSelector();
     // Run intial analysis
     this.analyse(this.startIdx, this.endIdx);
+  }
+
+  // Wall-clock seconds spanned by sample indices [startIdx, endIdx], derived
+  // from the real per-sample timestamps rather than assumed 20ms steps.
+  durationBetween(startIdx, endIdx) {
+    if (this.times.length === 0) return 0;
+    const clampedStart = Math.min(startIdx, this.times.length - 1);
+    const clampedEnd = Math.min(endIdx, this.times.length - 1);
+    return (this.times[clampedEnd] - this.times[clampedStart]) / 1000;
   }
 
   async analyse(startIdx, endIdx) {
@@ -252,12 +307,27 @@ class MeasurementAnalyser {
           fft_time_sequence.set(end_padding, start_padding_size + actual_values.length);
         }
 
+        // A gap wider than gapThresholdMs inside this window means the
+        // window mixes samples from before and after a discontinuity (a
+        // dropped sample, a reconnect, ...) -- the resulting dB value would
+        // be misleading, so flag it and render a break instead.
+        const window_times = this.times.slice(window_start_idx, window_end_idx);
+        let hasGap = false;
+        for (let t = 1; t < window_times.length; t++) {
+          if (window_times[t] - window_times[t - 1] > this.gapThresholdMs) {
+            hasGap = true;
+            break;
+          }
+        }
+
         const spectrum = fourier_transform(fft_time_sequence);
         // update spectrogram
         this.spectrogram.setSpectrum(i, spectrum);
         this.spectrogram.render();
-        // set sound pressure level value in chart
-        this.setSoundpressure(i, spectrum);
+        // set sound pressure level value in chart, positioned at the real
+        // timestamp of the window's center sample
+        const timeSeconds = this.times[sample_idx] / 1000;
+        this.setSoundpressure(i, spectrum, timeSeconds, hasGap);
 
         setTimeout(() => {
           // give controll back to event loop to draw the ui elements
@@ -275,10 +345,13 @@ class MeasurementAnalyser {
     setProgressbar(0, "No work pending");
   }
 
-  setSoundpressure(index, spectrum) {
+  setSoundpressure(index, spectrum, timeSeconds, hasGap) {
     const frequencies = linspace(0, 25, spectrum.length);
     const totalSoundPressureLevel = computeTotalDBG(frequencies, spectrum);
-    this.totalSoundPressureLevels[index] = totalSoundPressureLevel;
+    this.durationSeconds[index] = timeSeconds;
+    // Highcharts renders a gap for a null y-value -- the honest way to draw
+    // a discontinuity instead of interpolating across missing samples.
+    this.totalSoundPressureLevels[index] = hasGap ? null : totalSoundPressureLevel;
 
     // TODO don't always do this it might be quite slow
     const chart_data = [];
@@ -320,13 +393,17 @@ class MeasurementAnalyser {
     // TODO add the confirm listener here
     analyseRangeButton.addEventListener("click", this.onAnalyseSelectedRange);
     analyseRangeButton.disabled = false;
+    downloadRangeButton.addEventListener("click", this.onDownloadSelectedRange);
+    downloadRangeButton.disabled = false;
   }
 
   previewSelectedRange() {
     const from = parseInt(fromSlider.value, 10);
     const to = parseInt(toSlider.value, 10);
 
-    this.spectrogram.previewSelectedRange(this.startIdx, this.endIdx, from, to);
+    this.spectrogram.previewSelectedRange(
+      this.startIdx, this.endIdx, from, to,
+      this.durationBetween(this.startIdx, this.endIdx));
   }
 
   onAnalyseSelectedRange() {
@@ -337,8 +414,26 @@ class MeasurementAnalyser {
     this.startIdx = from;
     this.endIdx = from;
 
-    this.spectrogram.previewSelectedRange(this.startIdx, this.endIdx, this.startIdx, this.endIdx);
+    this.spectrogram.previewSelectedRange(
+      this.startIdx, this.endIdx, this.startIdx, this.endIdx,
+      this.durationBetween(this.startIdx, this.endIdx));
     this.analyse(from, to);
+  }
+
+  onDownloadSelectedRange() {
+    const from = parseInt(fromSlider.value, 10);
+    const to = parseInt(toSlider.value, 10);
+    const count = to - from + 1;
+    // The sliders index into this.sequence, which downloadAndAnalyse()
+    // always fills from a /raw request with no from/count -- i.e. the
+    // whole file -- so a slider index is already a record index and needs
+    // no offset. With the sliders left at their default full-span values
+    // this downloads every record, same as the plain list Download button.
+    const csvEndpoint = "/download?file=" +
+      encodeURIComponent(currentAnalysisFileName) +
+      "&from=" + from + "&count=" + count;
+    console.log("Downloading", csvEndpoint);
+    downloadFile(csvEndpoint);
   }
 }
 
@@ -387,10 +482,12 @@ class Spectrogram {
     this.previewSelectedRange = this.previewSelectedRange.bind(this);
   }
 
-  previewSelectedRange(startIdx, endIdx, from, to) {
+  previewSelectedRange(startIdx, endIdx, from, to, totalDurationSeconds) {
     this.startIdx = startIdx;
     this.endIdx = endIdx;
-    this.total_duration = (endIdx - startIdx) * 20 / 1000;
+    // Real duration between the two sample timestamps, supplied by the
+    // caller (MeasurementAnalyser), instead of an assumed 20ms/sample grid.
+    this.total_duration = totalDurationSeconds;
     this.previewRangeFrom = from;
     this.previewRangeTo = to;
 
